@@ -1,0 +1,111 @@
+"""WebSocket: globale Einstellungen (Außentemperaturregelung, Fensterverhalten, Standardtemperatur).
+
+  smart_heating/settings/get
+  smart_heating/settings/update {outdoor_sensor?, outdoor_enabled?, outdoor_curve?,
+                                 unknown_window_policy?, default_temp?}
+Das aktive Profil wird über profiles/set_active geändert, raumweise Außentemperatur-
+Einstellungen über rooms/update (outdoor_mode, outdoor_curve).
+"""
+from __future__ import annotations
+
+from typing import Any
+
+import voluptuous as vol
+
+from homeassistant.components import websocket_api
+from homeassistant.core import HomeAssistant, callback
+
+from .const import DOMAIN
+from .rooms import RoomError
+from .websocket import _mutate, _store
+
+SETTING_FIELDS = (
+    "outdoor_sensor", "outdoor_enabled", "outdoor_curve", "unknown_window_policy", "default_temp",
+    "notify_service", "notify_entity_id",
+)
+
+
+def update_settings(cfg: dict, changes: dict[str, Any]) -> dict:
+    """Teiländerung der Einstellungen; Kurve wird zusammengeführt.
+
+    Validierung erfolgt anschließend vollständig in validate_config (ConfigStore).
+    """
+    unknown = set(changes) - set(SETTING_FIELDS)
+    if unknown:
+        raise RoomError("invalid_field", f"Unbekannte Felder: {', '.join(sorted(unknown))}")
+    settings = cfg["settings"]
+    for key, value in changes.items():
+        if key == "outdoor_curve":
+            if not isinstance(value, dict):
+                raise vol.Invalid("outdoor_curve muss ein Objekt sein")
+            merged = {**settings["outdoor_curve"], **value}
+            if value.get("points") in (None, []):
+                merged.pop("points", None)  # zurück zur linearen Kurve
+            settings["outdoor_curve"] = merged
+        else:
+            settings[key] = value
+    if settings.get("outdoor_enabled") and not settings.get("outdoor_sensor"):
+        raise RoomError("sensor_required", "Für die Außentemperaturregelung ist ein Sensor nötig")
+    return cfg
+
+
+@callback
+def async_register(hass: HomeAssistant) -> None:
+    websocket_api.async_register_command(hass, ws_get)
+    websocket_api.async_register_command(hass, ws_update)
+    websocket_api.async_register_command(hass, ws_notify_test)
+
+
+@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/settings/get"})
+@callback
+def ws_get(hass, connection, msg):
+    store = _store(hass)
+    if store is None:
+        connection.send_error(msg["id"], "not_loaded", "Smart Heating ist nicht geladen")
+        return
+    connection.send_result(msg["id"], store.data["settings"])
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): f"{DOMAIN}/settings/update", **{vol.Optional(f): object for f in SETTING_FIELDS}}
+)
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_update(hass, connection, msg):
+    changes = {k: v for k, v in msg.items() if k in SETTING_FIELDS}
+    store = _store(hass)
+    current = store.data["settings"]["outdoor_sensor"] if store else None
+    sensor = changes.get("outdoor_sensor")
+    new = [sensor] if isinstance(sensor, str) and sensor != current else []
+    service = changes.get("notify_service")
+    if isinstance(service, str) and "." in service and not hass.services.has_service(*service.split(".", 1)):
+        connection.send_error(msg["id"], "service_not_found",
+                              f"Dienst {service} existiert nicht (z. B. notify.telegram)")
+        return
+    if isinstance(changes.get("notify_entity_id"), str):
+        new.append(changes["notify_entity_id"])
+    await _mutate(hass, connection, msg, lambda cfg: update_settings(cfg, changes), new,
+                  lambda cfg: cfg["settings"])
+
+
+@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/notify/test"})
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_notify_test(hass, connection, msg):
+    """Testnachricht über den eingestellten Dienst senden."""
+    entries = hass.config_entries.async_loaded_entries(DOMAIN)
+    if not entries:
+        connection.send_error(msg["id"], "not_loaded", "Smart Heating ist nicht geladen")
+        return
+    data = entries[0].runtime_data
+    settings = data.store.data["settings"]
+    if not settings["notify_service"]:
+        connection.send_error(msg["id"], "no_service", "Kein Benachrichtigungsdienst eingestellt")
+        return
+    payload = {"message": "🔔 Testnachricht von Smart Heating Control", "title": "Heizung"}
+    if settings["notify_entity_id"]:
+        payload["entity_id"] = settings["notify_entity_id"]
+    if await data.controller.notifier.async_send(settings["notify_service"], payload, []):
+        connection.send_result(msg["id"], {"sent": True})
+    else:
+        connection.send_error(msg["id"], "send_failed", "Senden fehlgeschlagen – Details im Log")

@@ -1,0 +1,14 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Smart Heating Control",
+        "description": "Installiert die Heizungssteuerung. Räume, Geräte und Profile werden im Smart-Heating-Panel eingerichtet."
+      }
+    },
+    "abort": {
+      "already_configured": "Smart Heating Control ist bereits eingerichtet.",
+      "single_instance_allowed": "Es ist nur eine Instanz erlaubt."
+    }
+  }
+}
