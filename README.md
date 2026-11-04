@@ -7,12 +7,16 @@ Außentemperaturregelung und eigener Oberfläche (Seitenleiste „Heizung“).
 > andere Heizungsautomationen/Blueprints für **dieselben Thermostate** deaktivieren – sonst regeln
 > zwei Systeme gegeneinander. Empfehlung: zuerst mit einem Raum testen.
 
-## Installation
+## Installation (HACS)
 
-1. Ordner `custom_components/smart_heating` nach `/config/custom_components/` kopieren.
-2. Home Assistant neu starten.
-3. Einstellungen → Geräte & Dienste → Integration hinzufügen → **Smart Heating Control**.
-4. In der Seitenleiste erscheint **Heizung** (nur für Administratoren).
+1. HACS → ⋮ oben rechts → **Benutzerdefinierte Repositories**
+2. Repository: `https://github.com/Mod1819/Heitzungs-tool`, Typ **Integration** → Hinzufügen
+3. In HACS „Smart Heating Control“ suchen → **Herunterladen**
+4. Home Assistant neu starten
+5. Einstellungen → Geräte & Dienste → Integration hinzufügen → **Smart Heating Control**
+6. In der Seitenleiste erscheint **Heizung** (nur für Administratoren, ggf. Strg+F5)
+
+Updates erscheinen danach automatisch in HACS.
 
 ## Erste Schritte (im Panel)
 

@@ -5,15 +5,18 @@
     "frontend",
     "panel_custom"
   ],
-  "codeowners": [],
+  "codeowners": [
+    "@Mod1819"
+  ],
   "config_flow": true,
   "dependencies": [
     "http",
     "websocket_api"
   ],
-  "documentation": "https://github.com/",
+  "documentation": "https://github.com/Mod1819/Heitzungs-tool",
   "integration_type": "service",
   "iot_class": "local_push",
+  "issue_tracker": "https://github.com/Mod1819/Heitzungs-tool/issues",
   "requirements": [],
   "single_config_entry": true,
   "version": "1.2.0"
