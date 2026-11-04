@@ -11,6 +11,9 @@ const SOURCE_NAMES = { schedule: "Zeitplan", manual: "Manuell", default: "Standa
 const WINDOW_NAMES = { open: "offen", closed: "geschlossen", unknown: "unbekannt" };
 const THERMO_STATUS = { ok: "OK", pending: "wird übertragen", unavailable: "nicht verfügbar", hvac_off: "ausgeschaltet", unsupported: "nicht unterstützt", not_confirmed: "nicht bestätigt", service_error: "Fehler" };
 const OUTDOOR_STATUS = { ok: "OK", invalid: "ungültig", implausible: "unplausibel", not_configured: "nicht eingerichtet" };
+// Spiegel von devices.NOT_A_WINDOW: diese binary_sensor sind sicher keine Fenster/Türen
+const NOT_A_WINDOW = new Set(["battery", "battery_charging", "carbon_monoxide", "cold", "connectivity", "gas", "heat", "light", "moisture", "motion", "moving", "occupancy", "plug", "power", "presence", "problem", "running", "safety", "smoke", "sound", "tamper", "update", "vibration"]);
+const WINDOW_LIKE = new Set(["window", "door", "opening", "garage_door"]);
 const VIEWS = [["dashboard", "Übersicht"], ["rooms", "Räume"], ["profiles", "Profile"], ["schedule", "Wochenplan"], ["settings", "Einstellungen"], ["system", "System"]];
 
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -125,12 +128,23 @@ class SmartHeatingPanel extends HTMLElement {
     return `<datalist id="dl-notify">${opts}</datalist>`;
   }
 
-  entityOptions(id, domains) {
+  entityOptions(id, domains, windowsOnly = false) {
     const states = this._hass ? Object.values(this._hass.states) : [];
-    const opts = states.filter((s) => domains.includes(s.entity_id.split(".")[0]))
-      .sort((a, b) => a.entity_id.localeCompare(b.entity_id))
-      .map((s) => `<option value="${esc(s.entity_id)}">${esc(s.attributes.friendly_name || "")}</option>`).join("");
+    let list = states.filter((s) => domains.includes(s.entity_id.split(".")[0]));
+    if (windowsOnly) {
+      // Batterie-, Sabotage-, Verbindungsmeldungen usw. ausblenden; echte Fenster/Türen zuerst
+      list = list.filter((s) => !NOT_A_WINDOW.has(s.attributes.device_class));
+      const rank = (s) => (WINDOW_LIKE.has(s.attributes.device_class) ? 0 : 1);
+      list.sort((a, b) => rank(a) - rank(b) || a.entity_id.localeCompare(b.entity_id));
+    } else {
+      list.sort((a, b) => a.entity_id.localeCompare(b.entity_id));
+    }
+    const opts = list.map((s) => `<option value="${esc(s.entity_id)}">${esc(s.attributes.friendly_name || "")}</option>`).join("");
     return `<datalist id="${id}">${opts}</datalist>`;
+  }
+
+  lowBatteries(rid) {
+    return (this.status.batteries || []).filter((b) => b.low && (!rid || b.rooms.includes(rid)));
   }
 
   // ---------------------------------------------------------------- Ereignisse
@@ -424,6 +438,7 @@ class SmartHeatingPanel extends HTMLElement {
         ${r.outdoor_reduction ? `<div class="row sub"><span>Außentemperatur</span><span>−${num(r.outdoor_reduction)} K</span></div>` : ""}
         <div class="row sub"><span>Fenster</span><span class="${r.window === "open" ? "warn-t" : r.window === "unknown" ? "err-t" : ""}">${room.window_sensors.length ? esc(WINDOW_NAMES[r.window] || "–") : "keine Kontakte"}${r.lock_pending_until ? ` · Sperre ab ${esc(clock(r.lock_pending_until))}` : ""}</span></div>
         <div class="row sub"><span>Profil</span><span>${esc(this.profileName(t.profile_id))}${t.profile_source === "room" ? " (Raum)" : ""}</span></div>
+        ${this.lowBatteries(rid).length ? `<div class="row warn-t">🔋 Batterie niedrig: ${esc(this.lowBatteries(rid).map((b) => b.device).join(", "))}</div>` : ""}
         ${issues.length ? `<div class="row err-t">⚠ ${issues.length} Thermostat(e): ${esc(issues.map((e) => THERMO_STATUS[this.status.thermostats[e].status]).join(", "))}</div>` : ""}
       </div>`;
     }).join("");
@@ -499,7 +514,7 @@ class SmartHeatingPanel extends HTMLElement {
       <div class="card"><h3>Thermostate</h3>${this._devList("thermostat", "thermostats", room)}
         <div class="form-row">${this.entityOptions("dl-climate", ["climate"])}<input list="dl-climate" data-f="add_thermostat" placeholder="climate.…" value="${esc(this.f("add_thermostat", ""))}"><button data-act="add_dev" data-kind="thermostat">Hinzufügen</button></div></div>
       <div class="card"><h3>Fensterkontakte</h3>${this._devList("window_sensor", "window_sensors", room)}
-        <div class="form-row">${this.entityOptions("dl-window", ["binary_sensor", "input_boolean"])}<input list="dl-window" data-f="add_window_sensor" placeholder="binary_sensor.…" value="${esc(this.f("add_window_sensor", ""))}"><button data-act="add_dev" data-kind="window_sensor">Hinzufügen</button></div>
+        <div class="form-row">${this.entityOptions("dl-window", ["binary_sensor", "input_boolean"], true)}<input list="dl-window" data-f="add_window_sensor" placeholder="binary_sensor.…" value="${esc(this.f("add_window_sensor", ""))}"><button data-act="add_dev" data-kind="window_sensor">Hinzufügen</button></div>
         <h3>Verhalten bei offenem Fenster</h3>
         ${r.lock_pending_until ? `<div class="msg warn">Fenster offen – Sperre greift um ${esc(clock(r.lock_pending_until))}</div>` : ""}
         <div class="form-grid">
@@ -521,7 +536,7 @@ class SmartHeatingPanel extends HTMLElement {
         ${rd.stages.some((st) => st.notify) && !this.cfg.settings.notify_service ? '<div class="sub">Kein Benachrichtigungsdienst eingestellt – es wird nur das Event <code>smart_heating_window_alert</code> ausgelöst (Einstellungen).</div>' : ""}
         <h3>Mitsperren durch Kontakte anderer Räume</h3>
         <div class="sub">Z. B. Küche/Flur: Wenn die Terrassentür im Wohnzimmer länger offen ist, wird dieser Raum ebenfalls abgesenkt. Meldungen kommen nur vom Raum mit dem Fenster.</div>
-        ${this.entityOptions("dl-coupled", ["binary_sensor", "input_boolean"])}
+        ${this.entityOptions("dl-coupled", ["binary_sensor", "input_boolean"], true)}
         ${rd.coupled.map((c, i) => `<div class="stage">
           <input class="action" list="dl-coupled" data-rd="coupled|${i}|entity_id" value="${esc(c.entity_id)}" placeholder="binary_sensor.terrassentuer">
           <label class="inline">nach<input type="number" step="1" min="0" max="240" data-rd="coupled|${i}|delay" value="${esc(c.delay)}">min</label>
@@ -656,14 +671,20 @@ class SmartHeatingPanel extends HTMLElement {
     const windows = [];
     Object.entries(st.rooms).forEach(([rid, r]) => Object.entries(r.sensors || {}).forEach(([eid, s]) => windows.push(`<tr><td>${esc(this.friendly(eid))}<div class="sub">${esc(eid)}</div></td><td>${esc((this.cfg.rooms[rid] || {}).name || rid)}</td><td class="${s === "open" ? "warn-t" : s === "unknown" ? "err-t" : ""}">${esc(WINDOW_NAMES[s])}</td></tr>`)));
     const problems = Object.values(st.thermostats).filter((t) => !["ok", "pending"].includes(t.status)).length
-      + windows.filter((w) => w.includes("err-t")).length + (o.enabled && o.status !== "ok" ? 1 : 0);
+      + windows.filter((w) => w.includes("err-t")).length + (o.enabled && o.status !== "ok" ? 1 : 0)
+      + this.lowBatteries().length;
+    const roomNames = (ids) => ids.map((id) => (this.cfg.rooms[id] || {}).name || id).join(", ");
+    const batteries = (st.batteries || []).map((b) => `<tr><td>${esc(b.device)}<div class="sub">${esc(b.entity_id)}</div></td><td>${esc(roomNames(b.rooms))}</td>
+        <td class="${b.low ? "err-t" : "ok-t"}">${typeof b.level === "number" ? `${b.level} %` : esc(b.level)}${b.low ? " · niedrig" : ""}</td></tr>`).join("");
     return `<div class="card"><h2>Systemstatus</h2>
         <div class="stats"><div><span class="label">Regelung</span><b class="${st.started ? "ok-t" : "warn-t"}">${st.started ? "aktiv" : "wartet"}</b></div>
         <div><span class="label">Probleme</span><b class="${problems ? "err-t" : "ok-t"}">${problems}</b></div>
         <div><span class="label">Außensensor</span><b>${esc(OUTDOOR_STATUS[o.status] || "–")}</b></div>
         <div><span class="label">Räume</span><b>${Object.keys(this.cfg.rooms).length}</b></div></div></div>
       <div class="card"><h3>Thermostate</h3><div class="scroll"><table><tr><th>Gerät</th><th>Ziel</th><th>Gerät meldet</th><th>Status</th></tr>${thermos || '<tr><td colspan="4">Keine</td></tr>'}</table></div></div>
-      <div class="card"><h3>Fensterkontakte</h3><div class="scroll"><table><tr><th>Kontakt</th><th>Raum</th><th>Zustand</th></tr>${windows.join("") || '<tr><td colspan="3">Keine</td></tr>'}</table></div></div>`;
+      <div class="card"><h3>Fensterkontakte</h3><div class="scroll"><table><tr><th>Kontakt</th><th>Raum</th><th>Zustand</th></tr>${windows.join("") || '<tr><td colspan="3">Keine</td></tr>'}</table></div></div>
+      <div class="card"><h3>Batterien</h3><div class="sub">Geräte der eingetragenen Thermostate und Fensterkontakte sowie batteriebetriebene Geräte im selben Bereich.</div>
+        <div class="scroll"><table><tr><th>Gerät</th><th>Raum</th><th>Batterie</th></tr>${batteries || '<tr><td colspan="3">Keine Batteriedaten gefunden</td></tr>'}</table></div></div>`;
   }
 }
 

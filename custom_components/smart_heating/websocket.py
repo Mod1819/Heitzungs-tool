@@ -22,6 +22,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
 
 from .const import DOMAIN
+from .devices import wrong_window_sensors
 from .rooms import (
     KIND_FIELDS,
     ROOM_FIELDS,
@@ -99,6 +100,14 @@ async def _mutate(
     if missing:
         connection.send_error(
             msg["id"], "entity_not_found", f"Unbekannte Entities: {', '.join(missing)}"
+        )
+        return
+    wrong = wrong_window_sensors(hass, new_entities)
+    if wrong:
+        connection.send_error(
+            msg["id"], "not_a_window_sensor",
+            f"Kein Fenster-/Türkontakt (z. B. Batterie-Meldung): {', '.join(wrong)} – "
+            "bitte den Eintrag mit Zustand Offen/Geschlossen wählen",
         )
         return
     try:

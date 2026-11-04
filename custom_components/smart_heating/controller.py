@@ -36,6 +36,7 @@ from homeassistant.helpers.event import (
 from homeassistant.util import dt as dt_util
 from homeassistant.util.unit_conversion import TemperatureConverter
 
+from .devices import battery_report
 from .models import MANUAL_UNTIL_NEXT
 from .notify import WindowNotifier
 from .rooms import RoomError, rooms_for_thermostat
@@ -494,5 +495,6 @@ class Controller:
             "next_wakeup": self.next_wakeup.isoformat() if self.next_wakeup else None,
             "thermostats": self.thermostat_status,
             "actions": {rid: list(d) for rid, d in self.actions.items()},
+            "batteries": battery_report(self.hass, self.store.data),
             "time": datetime.now(dt_util.get_default_time_zone()).isoformat(),
         }

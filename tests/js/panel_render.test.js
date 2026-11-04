@@ -250,3 +250,34 @@ test("Gekoppelte Sperre wird mit Ursache angezeigt", async () => {
   await t.click("[data-act=open_room][data-room=wz]");
   assert.match(t.q(".msg.warn").textContent, /Fenster WZ \(gekoppelt\)/);
 });
+
+test("Fensterkontakt-Auswahl blendet Batterie-Einträge aus, Fenster zuerst", async () => {
+  const t = setup(); await tick(); await tick();
+  Object.assign(t.hass.states, {
+    "binary_sensor.wz_fenster_low_battery": { entity_id: "binary_sensor.wz_fenster_low_battery", state: "off", attributes: { device_class: "battery" } },
+    "binary_sensor.a_tuer": { entity_id: "binary_sensor.a_tuer", state: "off", attributes: { device_class: "door" } },
+    "binary_sensor.z_fenster": { entity_id: "binary_sensor.z_fenster", state: "off", attributes: { device_class: "window" } },
+  });
+  await t.click("[data-act=open_room][data-room=wz]");
+  const opts = [...t.root.querySelectorAll("#dl-window option")].map((o) => o.value);
+  assert.ok(!opts.includes("binary_sensor.wz_fenster_low_battery"));
+  assert.deepEqual(opts.slice(0, 2), ["binary_sensor.a_tuer", "binary_sensor.z_fenster"]);
+  assert.ok(opts.includes("binary_sensor.wz_f"));                 // ohne Klasse bleibt wählbar
+  const coupled = [...t.root.querySelectorAll("#dl-coupled option")].map((o) => o.value);
+  assert.ok(!coupled.includes("binary_sensor.wz_fenster_low_battery"));
+});
+
+test("Niedrige Batterie in Übersicht und System", async () => {
+  const t = setup(); await tick(); await tick();
+  const snap = JSON.parse(JSON.stringify(SNAP));
+  snap.status.batteries = [
+    { entity_id: "binary_sensor.trv1_low_battery", device: "Heizkörper Fenster", rooms: ["wz"], level: "niedrig", low: true },
+    { entity_id: "sensor.fenster_battery", device: "Fensterkontakt WZ", rooms: ["wz"], level: 85, low: false },
+  ];
+  t.push(snap); await tick();
+  assert.match(t.root.innerHTML, /🔋 Batterie niedrig: Heizkörper Fenster/);
+  await t.click("[data-act=nav][data-view=system]");
+  assert.match(t.root.innerHTML, /Batterien/);
+  assert.match(t.root.innerHTML, /85 %/);
+  assert.match(t.root.innerHTML, /niedrig · niedrig/);          // Binärwert + Warnung
+});

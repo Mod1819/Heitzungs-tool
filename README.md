@@ -1,6 +1,6 @@
 # Smart Heating Control (Home Assistant Custom Integration)
 
-Version **1.2.0** – Raumweise Heizungssteuerung mit Wochenprofilen, Fenster-offen-Sperre,
+Version **1.3.0** – Raumweise Heizungssteuerung mit Wochenprofilen, Fenster-offen-Sperre,
 Außentemperaturregelung und eigener Oberfläche (Seitenleiste „Heizung“).
 
 > ⚠️ Die Integration steuert Thermostate aktiv (`climate.set_temperature`). Vor dem Einsatz
@@ -63,7 +63,7 @@ custom_components/smart_heating/
   notify.py               Fenster-Meldungen (Event + Dienst)
   websocket*.py           API (Räume, Profile/Pläne, Einstellungen, Status/Abo)
   panel.py · www/         Seitenleisten-Panel
-tests/                    204 Python-Tests (HA-Core) + tests/js (jsdom)
+tests/                    209 Python-Tests (HA-Core) + tests/js (jsdom)
 ```
 
 ## Datenmodell
@@ -172,9 +172,9 @@ Plan auf andere Räume übertragen) · Einstellungen (inkl. Kurvenvorschau) · S
 
 ```
 pip install pytest-homeassistant-custom-component
-SH_SNAPSHOT=/tmp/snapshot.json pytest          # 204 Tests, schreibt echten Status-Snapshot
+SH_SNAPSHOT=/tmp/snapshot.json pytest          # 209 Tests, schreibt echten Status-Snapshot
 npm install jsdom
-SH_SNAPSHOT=/tmp/snapshot.json node --test tests/js/panel_render.test.js   # 15 Oberflächentests
+SH_SNAPSHOT=/tmp/snapshot.json node --test tests/js/panel_render.test.js   # 17 Oberflächentests
 ```
 
 ## Öffnungsverzögerung & Fenster-Meldungen (v1.1)
@@ -232,3 +232,15 @@ automation:
 - Der gekoppelte Raum behält seinen eigenen Plan und seine eigenen Fenster. Ein Raum ohne Fenster (Flur) funktioniert genauso.
 - Ein gekoppelter Kontakt, der nicht verfügbar ist, sperrt **nicht**. Das Wohnzimmer selbst bleibt dabei weiter abgesichert.
 - Meldungen kommen nur vom Raum, dem der Kontakt gehört. Der gekoppelte Raum zeigt „Gekoppelt gesperrt – Terrassentür (gekoppelt)“.
+
+## Fensterkontakte & Batterien (v1.3)
+
+- **Nur echte Öffnungssensoren:** Ein Fensterkontakt-Gerät hat oft mehrere `binary_sensor`, z. B. auch „Batterie niedrig“ oder „Sabotage“.
+  - Die Auswahlliste zeigt Fenster- und Türsensoren zuerst und blendet solche Einträge aus.
+  - Das Backend lehnt sie mit `not_a_window_sensor` ab, sonst würde z. B. eine schwache Batterie als „Fenster offen“ gewertet.
+- **Batterieüberwachung:** Geprüft werden die Geräte der eingetragenen Thermostate und Fensterkontakte sowie alle batteriebetriebenen Geräte im **selben HA-Bereich**.
+  - Damit sind auch die Heizkörperthermostate einer Homematic-IP-Heizgruppe abgedeckt, die selbst keine Batterie hat.
+  - Als niedrig gilt: Batterie-`binary_sensor` steht auf „on“ oder der Wert liegt unter 20 %.
+  - Anzeige: Warnung auf der Raumkarte und Tabelle im Reiter **System**.
+  - Die Regelung selbst wird dadurch nicht beeinflusst.
+- **Homematic IP:** Als Thermostat die Heizgruppe `climate.<raum>` eintragen und die Gruppe auf Modus `heat` (Manuell) stellen. Sonst überschreibt der Zeitplan aus der HmIP-App die Sollwerte.
