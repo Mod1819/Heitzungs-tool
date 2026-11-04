@@ -682,7 +682,7 @@ class SmartHeatingPanel extends HTMLElement {
       const rows = slots.map((s, i) => `<div class="slot">
           <input class="time${bad[i].start ? " invalid" : ""}" data-slot="${day}|${i}|start" value="${esc(s.start)}" placeholder="06:00" maxlength="5">
           <span>–</span><input class="time${bad[i].end ? " invalid" : ""}" data-slot="${day}|${i}|end" value="${esc(s.end)}" placeholder="08:30" maxlength="5">
-          <input class="tnum" type="number" step="0.5" min="4" max="35" data-slot="${day}|${i}|temp" value="${esc(s.temp)}"><span>°C</span>
+          <input class="tnum${parseNum(s.temp) === null || parseNum(s.temp) < 4 || parseNum(s.temp) > 35 ? " invalid" : ""}" type="text" inputmode="decimal" maxlength="5" data-slot="${day}|${i}|temp" value="${esc(String(s.temp ?? "").replace(".", ","))}"><span>°C</span>
           <button class="icon" data-act="slot_rm" data-day="${day}" data-idx="${i}" title="Entfernen">✕</button></div>`).join("");
       return `<div class="day"><div class="day-head"><b>${DAY_NAMES[day]}</b>
           <span class="copy"><select data-f="copyto_${day}">${copyOpts(day)}</select><button data-act="day_copy" data-day="${day}">Kopieren</button></span></div>
