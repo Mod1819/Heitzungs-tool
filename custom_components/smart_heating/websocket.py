@@ -91,6 +91,7 @@ def _room_view(hass: HomeAssistant, cfg: dict, room_id: str) -> dict[str, Any]:
 async def _mutate(
     hass: HomeAssistant, connection, msg: dict, mutator: Callable[[dict], dict],
     new_entities: list[str], result: Callable[[dict], Any],
+    window_ids: list[str] | None = None,
 ) -> None:
     store = _store(hass)
     if store is None:
@@ -102,7 +103,11 @@ async def _mutate(
             msg["id"], "entity_not_found", f"Unbekannte Entities: {', '.join(missing)}"
         )
         return
-    wrong = wrong_window_sensors(hass, new_entities)
+    if window_ids is None:
+        batteries = msg.get("battery_entities")
+        batteries = batteries if isinstance(batteries, list) else []
+        window_ids = [e for e in new_entities if e not in batteries]
+    wrong = wrong_window_sensors(hass, window_ids)
     if wrong:
         connection.send_error(
             msg["id"], "not_a_window_sensor",
@@ -124,7 +129,7 @@ async def _mutate(
 def _new_ids(data: dict[str, Any], current: dict | None = None) -> list[str]:
     """Neu hinzukommende Entity-IDs – nur diese werden auf Existenz geprüft."""
     ids: list[str] = []
-    for field in (*KIND_FIELDS.values(), "temperature_sensor"):
+    for field in (*KIND_FIELDS.values(), "temperature_sensor", "battery_entities"):
         val = data.get(field)
         vals = val if isinstance(val, list) else [val] if isinstance(val, str) else []
         old = (current or {}).get(field) or []

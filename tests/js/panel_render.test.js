@@ -281,3 +281,64 @@ test("Niedrige Batterie in Übersicht und System", async () => {
   assert.match(t.root.innerHTML, /85 %/);
   assert.match(t.root.innerHTML, /niedrig · niedrig/);          // Binärwert + Warnung
 });
+
+test("Wochenplan: Zeit \"6:00\" wird beim Speichern zu \"06:00\"", async () => {
+  const t = setup(); await tick(); await tick();
+  await t.click("[data-act=nav][data-view=schedule]");
+  await tick();
+  await t.click("[data-act=slot_add][data-day=sat]");
+  const idx = t.root.querySelectorAll('[data-slot^="sat|"][data-slot$="|start"]').length - 1;
+  t.type(`[data-slot="sat|${idx}|start"]`, "6:00");
+  t.type(`[data-slot="sat|${idx}|end"]`, "8");
+  await t.choose(`[data-slot="sat|${idx}|end"]`, "8");
+  assert.equal(t.q(`[data-slot="sat|${idx}|start"]`).value, "6:00");  // Roh-Eingabe bleibt ohne change
+  await t.click("[data-act=week_save]");
+  const save = t.calls.at(-1);
+  assert.equal(save.type, "smart_heating/schedule/set_week");
+  assert.equal(save.week.sat[idx].start, "06:00");
+  assert.equal(save.week.sat[idx].end, "08:00");
+});
+
+test("Wochenplan: ungültige Zeit wird markiert und Hinweis angezeigt", async () => {
+  const t = setup(); await tick(); await tick();
+  await t.click("[data-act=nav][data-view=schedule]");
+  await tick();
+  await t.click("[data-act=slot_add][data-day=sun]");
+  t.type('[data-slot="sun|0|start"]', "25:99");
+  t.type('[data-slot="sun|0|end"]', "7");
+  t.root.querySelector('[data-slot="sun|0|temp"]').dispatchEvent(new t.w.Event("focusout", { bubbles: true }));
+  await t.click("[data-act=slot_add][data-day=mon]"); // löst Re-Render aus
+  assert.ok(t.q('[data-slot="sun|0|start"]').classList.contains("invalid"));
+  assert.match(t.root.innerHTML, /Ungültige Uhrzeit/);
+  assert.ok(!t.q('[data-slot="sun|0|temp"]').classList.contains("invalid"));
+});
+
+test("Raum: Batterie manuell hinzufügen und entfernen", async () => {
+  const t = setup(); await tick(); await tick();
+  Object.assign(t.hass.states, {
+    "binary_sensor.fk_bat": { entity_id: "binary_sensor.fk_bat", state: "on", attributes: { device_class: "battery", friendly_name: "FK Batterie" } },
+  });
+  await t.click("[data-act=open_room][data-room=wz]");
+  assert.match(t.root.innerHTML, /Batterien \(optional, manuell\)/);
+  const opts = [...t.root.querySelectorAll("#dl-battery option")].map((o) => o.value);
+  assert.equal(opts[0], "binary_sensor.fk_bat");                   // device_class battery zuerst
+  t.type("[data-f=add_battery]", "binary_sensor.fk_bat");
+  await t.click("[data-act=bat_add]");
+  const call = t.calls.at(-1);
+  assert.equal(call.type, "smart_heating/rooms/update");
+  assert.equal(call.room_id, "wz");
+  assert.ok(call.battery_entities.includes("binary_sensor.fk_bat"));
+});
+
+test("Wochenplan: Abschnitt hinzufügen bei 24:00 zeigt Hinweis statt Fehler", async () => {
+  const t = setup(); await tick(); await tick();
+  await t.click("[data-act=nav][data-view=schedule]");
+  await tick();
+  const count = () => t.root.querySelectorAll('[data-slot^="sat|"][data-slot$="|start"]').length;
+  await t.click("[data-act=slot_add][data-day=sat]");   // letzter Abschnitt endet danach bei 24:00
+  const before = count();
+  await t.click("[data-act=slot_add][data-day=sat]");
+  assert.match(t.root.innerHTML, /Tag ist bis 24:00 belegt/);
+  assert.equal(t.root.querySelector(".msg.error"), null);
+  assert.equal(count(), before);
+});

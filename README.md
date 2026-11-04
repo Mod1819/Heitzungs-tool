@@ -244,3 +244,16 @@ automation:
   - Anzeige: Warnung auf der Raumkarte und Tabelle im Reiter **System**.
   - Die Regelung selbst wird dadurch nicht beeinflusst.
 - **Homematic IP:** Als Thermostat die Heizgruppe `climate.<raum>` eintragen und die Gruppe auf Modus `heat` (Manuell) stellen. Sonst überschreibt der Zeitplan aus der HmIP-App die Sollwerte.
+
+## Batterien manuell & Zeiteingabe (v1.3.1)
+
+- **Batterien manuell zuordnen:** Im Raum gibt es die Karte „Batterien (optional, manuell)“. Dort lassen sich
+  `sensor`- oder `binary_sensor`-Entitäten (z. B. der Batterie-Eintrag eines Homematic-IP-Fensterkontakts) pro
+  Raum eintragen (`battery_entities`). Zusätzlich werden Batterie-Attribute (`low_battery`, `battery_low`,
+  `battery_level`, `battery`) der Thermostate und Fensterkontakte selbst ausgewertet. Binäre Batterie-Sensoren
+  sind in `battery_entities` erlaubt und werden nicht als Fensterkontakt abgelehnt.
+- **Flexible Uhrzeiten:** Im Wochenplan werden Eingaben wie `6`, `6:00`, `6.00`, `630` automatisch zu `06:00`
+  (`24` zu `24:00`). Gespeichert wird weiterhin `HH:MM`.
+- **Bessere Rückmeldung:** Ungültige Zeiten, „Ende vor Start“ und Überschneidungen werden rot markiert und mit einem
+  Hinweis unter dem Tag erklärt. Fehler- und Erfolgsmeldungen bleiben beim Scrollen oben sichtbar. „+ Abschnitt“ bei
+  einem bis 24:00 belegten Tag zeigt einen Hinweis statt eines Fehlers.

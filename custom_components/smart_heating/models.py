@@ -82,6 +82,7 @@ CLIMATE_ID = _entity_id(("climate",))
 WINDOW_ID = _entity_id(("binary_sensor", "input_boolean"))
 TEMP_SENSOR_ID = _entity_id(("sensor",))
 NOTIFY_ENTITY_ID = _entity_id(("notify",))
+BATTERY_ID = _entity_id(("sensor", "binary_sensor"))
 _SERVICE_RE = re.compile(r"^[a-z0-9_]+\.[a-z0-9_]+$")
 
 
@@ -228,6 +229,8 @@ ROOM_SCHEMA = vol.All(vol.Schema(
         vol.Optional("notify_on_close", default=True): bool,
         vol.Optional("notify_stages", default=[]): _stages,
         vol.Optional("coupled_sensors", default=[]): _coupled,
+        # Manuell zugeordnete Batterie-Entitäten (Fallback, wenn die Automatik nichts findet)
+        vol.Optional("battery_entities", default=[]): _unique_list(BATTERY_ID),
     }
 ), _room_rules)
 
@@ -237,10 +240,28 @@ def _minutes(hhmm: str) -> int:
     return int(h) * 60 + int(m)
 
 
+def norm_time(value: str) -> str:
+    """Flexible Eingaben ("6", "6:00", "6.00", "6,00", "630") -> "HH:MM" (sonst unverändert)."""
+    v = value.strip()
+    m = re.fullmatch(r"(\d{1,2})(?:[:.,](\d{1,2}))?", v) or re.fullmatch(r"(\d{1,2})(\d{2})", v)
+    if not m:
+        return v
+    return f"{int(m.group(1)):02d}:{int(m.group(2) or 0):02d}"
+
+
+def _time(value: Any) -> str:
+    if not isinstance(value, str):
+        raise vol.Invalid(f"Ungültige Uhrzeit: {value!r}")
+    out = norm_time(value)
+    if not _TIME_RE.match(out):
+        raise vol.Invalid(f"Ungültige Uhrzeit: {value!r}")
+    return out
+
+
 SLOT_SCHEMA = vol.Schema(
     {
-        vol.Required("start"): vol.All(str, vol.Match(_TIME_RE)),
-        vol.Required("end"): vol.All(str, vol.Match(_TIME_RE)),
+        vol.Required("start"): _time,
+        vol.Required("end"): _time,
         vol.Required("temp"): TEMP,
     }
 )

@@ -68,7 +68,7 @@ def test_day_sorted_and_24h():
     [{"start": "06:00", "end": "09:00", "temp": 21}, {"start": "08:00", "end": "10:00", "temp": 18}],
     [{"start": "10:00", "end": "09:00", "temp": 21}],
     [{"start": "24:00", "end": "24:00", "temp": 21}],
-    [{"start": "6:00", "end": "09:00", "temp": 21}],
+    [{"start": "ab:00", "end": "09:00", "temp": 21}],
 ])
 def test_day_rejects_overlap_and_bad_times(slots):
     with pytest.raises(vol.Invalid):

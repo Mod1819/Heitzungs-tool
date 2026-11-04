@@ -22,6 +22,15 @@ const temp = (v) => (v === null || v === undefined ? "–" : `${num(v)} °C`);
 const parseNum = (v) => { const n = parseFloat(String(v).replace(",", ".")); return Number.isFinite(n) ? n : null; };
 const clock = (iso) => new Date(iso).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
 const toMin = (sec) => Math.round((Number(sec) || 0) / 6) / 10; // Sekunden -> Minuten (0,1)
+/** Spiegel von models.norm_time: "6", "6:00", "6.00", "630" -> "HH:MM"; sonst Original. */
+const normTime = (v) => {
+  const raw = String(v ?? "");
+  const t = raw.trim();
+  const m = /^(\d{1,2})(?:[:.,](\d{1,2}))?$/.exec(t) || /^(\d{1,2})(\d{2})$/.exec(t);
+  if (!m) return raw;
+  return `${String(Number(m[1])).padStart(2, "0")}:${String(Number(m[2] || 0)).padStart(2, "0")}`;
+};
+const TIME_OK = /^([01]\d|2[0-3]):[0-5]\d$|^24:00$/;
 const minutes = (hhmm) => { const [h, m] = hhmm.split(":").map(Number); return h * 60 + m; };
 
 /** Spiegel von targets.outdoor_reduction (Vorschau in den Einstellungen). */
@@ -57,7 +66,7 @@ class SmartHeatingPanel extends HTMLElement {
     this.shadowRoot.addEventListener("click", (e) => this._onClick(e));
     this.shadowRoot.addEventListener("change", (e) => this._onChange(e));
     this.shadowRoot.addEventListener("input", (e) => this._onInput(e));
-    this.shadowRoot.addEventListener("focusout", () => setTimeout(() => this._pendingRender && !this._focused() && this._render(), 0));
+    this.shadowRoot.addEventListener("focusout", (e) => { this._normSlotField(e.target); setTimeout(() => this._pendingRender && !this._focused() && this._render(), 0); });
   }
 
   set hass(hass) {
@@ -128,13 +137,16 @@ class SmartHeatingPanel extends HTMLElement {
     return `<datalist id="dl-notify">${opts}</datalist>`;
   }
 
-  entityOptions(id, domains, windowsOnly = false) {
+  entityOptions(id, domains, windowsOnly = false, batteryFirst = false) {
     const states = this._hass ? Object.values(this._hass.states) : [];
     let list = states.filter((s) => domains.includes(s.entity_id.split(".")[0]));
     if (windowsOnly) {
       // Batterie-, Sabotage-, Verbindungsmeldungen usw. ausblenden; echte Fenster/Türen zuerst
       list = list.filter((s) => !NOT_A_WINDOW.has(s.attributes.device_class));
       const rank = (s) => (WINDOW_LIKE.has(s.attributes.device_class) ? 0 : 1);
+      list.sort((a, b) => rank(a) - rank(b) || a.entity_id.localeCompare(b.entity_id));
+    } else if (batteryFirst) {
+      const rank = (s) => (s.attributes.device_class === "battery" ? 0 : 1);
       list.sort((a, b) => rank(a) - rank(b) || a.entity_id.localeCompare(b.entity_id));
     } else {
       list.sort((a, b) => a.entity_id.localeCompare(b.entity_id));
@@ -185,10 +197,23 @@ class SmartHeatingPanel extends HTMLElement {
     }
   }
 
+  /** Zeitfeld nach Eingabe auf HH:MM normalisieren (Eingabefeld und Entwurf). */
+  _normSlotField(el) {
+    if (!el.dataset || !el.dataset.slot || !this._draft) return;
+    const [day, idx, field] = el.dataset.slot.split("|");
+    if (field !== "start" && field !== "end") return;
+    const slot = this._draft.week[day][Number(idx)];
+    if (!slot) return;
+    const n = normTime(el.value);
+    if (n !== el.value) el.value = n;
+    if (n !== slot[field]) { slot[field] = n; this._draft.dirty = true; }
+  }
+
   async _onChange(e) {
     const el = e.target;
     if (el.dataset.f && el.type === "checkbox") this._form[el.dataset.f] = el.checked;
     if (el.type === "checkbox") this._rdInput(el);
+    this._normSlotField(el);
     const act = el.dataset.change;
     if (!act) return;
     try {
@@ -213,6 +238,7 @@ class SmartHeatingPanel extends HTMLElement {
     if (!el) return;
     const a = el.dataset.act;
     const d = el.dataset;
+    this._dayHint = null;
     try {
       switch (a) {
         case "nav": this._view = d.view; this._form = {}; this._error = null; this._notice = null; if (d.view === "schedule") await this._ensureDraft(); this._render(); return;
@@ -242,6 +268,17 @@ class SmartHeatingPanel extends HTMLElement {
           if (!eid) { this._error = "Bitte eine Entity auswählen"; break; }
           await this._call("rooms/assign", { room_id: this._roomId, kind: d.kind, entity_id: eid }, `${eid} zugeordnet`);
           delete this._form[key]; break;
+        }
+        case "bat_add": {
+          const eid = (this._form.add_battery || "").trim();
+          if (!eid) { this._error = "Bitte eine Entity auswählen"; break; }
+          const cur = this.cfg.rooms[this._roomId].battery_entities || [];
+          await this._call("rooms/update", { room_id: this._roomId, battery_entities: cur.includes(eid) ? cur : [...cur, eid] }, `${eid} als Batterie zugeordnet`);
+          delete this._form.add_battery; break;
+        }
+        case "bat_rm": {
+          const cur = this.cfg.rooms[this._roomId].battery_entities || [];
+          await this._call("rooms/update", { room_id: this._roomId, battery_entities: cur.filter((x) => x !== d.entity) }, `${d.entity} entfernt`); break;
         }
         case "rm_dev": await this._call("rooms/unassign", { room_id: this._roomId, kind: d.kind, entity_id: d.entity }, `${d.entity} entfernt`); break;
         case "set_temp_sensor": await this._call("rooms/update", { room_id: this._roomId, temperature_sensor: (this._form.temp_sensor || "").trim() || null }, "Temperatursensor gespeichert"); delete this._form.temp_sensor; break;
@@ -316,8 +353,8 @@ class SmartHeatingPanel extends HTMLElement {
         case "slot_add": {
           const slots = this._draft.week[d.day];
           const last = slots[slots.length - 1];
-          const start = last ? last.end : "00:00";
-          if (start === "24:00") { this._error = "Der Tag ist bereits bis 24:00 belegt"; break; }
+          const start = last ? normTime(last.end) : "00:00";
+          if (normTime(start) === "24:00") { this._dayHint = { day: d.day, text: "Tag ist bis 24:00 belegt – Ende des letzten Abschnitts verkürzen, um einen weiteren hinzuzufügen" }; break; }
           slots.push({ start, end: "24:00", temp: last ? last.temp : 20 });
           this._draft.dirty = true; break;
         }
@@ -331,7 +368,7 @@ class SmartHeatingPanel extends HTMLElement {
         }
         case "week_save": {
           const week = {};
-          for (const day of DAYS) week[day] = this._draft.week[day].map((s) => ({ start: s.start, end: s.end, temp: parseNum(s.temp) }));
+          for (const day of DAYS) week[day] = this._draft.week[day].map((s) => ({ start: normTime(s.start), end: normTime(s.end), temp: parseNum(s.temp) }));
           const res = await this._call("schedule/set_week", { profile_id: this._draft.pid, room_id: this._draft.rid, week }, "Wochenplan gespeichert");
           this._draft = { ...this._draft, week: res.week, dirty: false }; break;
         }
@@ -477,6 +514,21 @@ class SmartHeatingPanel extends HTMLElement {
     }).join("") || '<div class="sub">Keine zugeordnet.</div>';
   }
 
+  _batteryList(room) {
+    const list = room.battery_entities || [];
+    return list.map((eid) => {
+      const st = this.stateOf(eid);
+      let info = "nicht gefunden";
+      if (st) {
+        if (["unavailable", "unknown"].includes(st.state)) info = "nicht verfügbar";
+        else if (eid.startsWith("binary_sensor.")) info = st.state === "on" ? '<span class="err-t">niedrig</span>' : "ok";
+        else info = `${esc(st.state)} ${esc(st.attributes.unit_of_measurement || "")}`.trim();
+      }
+      return `<div class="list-row"><div><b>${esc(this.friendly(eid))}</b><div class="sub">${esc(eid)} · ${info}</div></div>
+        <button class="danger" data-act="bat_rm" data-entity="${esc(eid)}">Entfernen</button></div>`;
+    }).join("") || '<div class="sub">Keine zugeordnet.</div>';
+  }
+
   _room() {
     const rid = this._roomId;
     const room = this.cfg.rooms[rid];
@@ -544,6 +596,10 @@ class SmartHeatingPanel extends HTMLElement {
           <button class="icon" data-act="rd_rm_coupled" data-idx="${i}" title="Entfernen">✕</button></div>`).join("")}
         <button data-act="rd_add_coupled">+ Gekoppelter Kontakt</button>
         <div class="form-row"><button class="primary" data-act="save_window_temp">Fenster-Einstellungen speichern</button>${rd.dirty ? '<span class="sub">ungespeicherte Änderungen</span>' : ""}</div></div>
+      <div class="card"><h3>Batterien (optional, manuell)</h3>
+        <div class="sub">Falls die Batterie automatisch nicht gefunden wird (z. B. Gerät keinem Bereich zugeordnet), hier den Batterie-Eintrag des Fensterkontakts/Thermostats eintragen.</div>
+        ${this._batteryList(room)}
+        <div class="form-row">${this.entityOptions("dl-battery", ["sensor", "binary_sensor"], false, true)}<input list="dl-battery" data-f="add_battery" placeholder="sensor.… / binary_sensor.…" value="${esc(this.f("add_battery", ""))}"><button data-act="bat_add">Hinzufügen</button></div></div>
       <div class="card"><h3>Raumtemperatursensor (optional)</h3><div class="form-row">${this.entityOptions("dl-sensor", ["sensor"])}
         <input list="dl-sensor" data-f="temp_sensor" placeholder="sensor.… (leer = Thermostat-Messwert)" value="${esc(this.f("temp_sensor", room.temperature_sensor || ""))}"><button data-act="set_temp_sensor">Speichern</button></div></div>
       <div class="card"><h3>Außentemperaturregelung</h3>
@@ -578,12 +634,34 @@ class SmartHeatingPanel extends HTMLElement {
   }
 
   _dayBar(slots) {
-    const segs = slots.filter((s) => /^\d\d:\d\d$/.test(s.start) && /^\d\d:\d\d$/.test(s.end) && parseNum(s.temp) !== null).map((s) => {
+    slots = slots.map((s) => ({ ...s, start: normTime(s.start), end: normTime(s.end) }));
+    const segs = slots.filter((s) => TIME_OK.test(s.start) && TIME_OK.test(s.end) && parseNum(s.temp) !== null).map((s) => {
       const a = minutes(s.start), b = minutes(s.end);
       if (b <= a) return "";
       return `<div class="seg" style="left:${(a / 1440) * 100}%;width:${((b - a) / 1440) * 100}%;background:${tempColor(parseNum(s.temp))}" title="${esc(s.start)}–${esc(s.end)} ${esc(num(parseNum(s.temp)))} °C">${b - a >= 120 ? esc(num(parseNum(s.temp))) : ""}</div>`;
     }).join("");
     return `<div class="daybar">${segs}<div class="ticks"><span>0</span><span>6</span><span>12</span><span>18</span><span>24</span></div></div>`;
+  }
+
+  /** Prüft die Abschnitte eines Tages: ungültige Zeit, Ende <= Start, Überschneidung. */
+  _slotIssues(slots) {
+    const bad = slots.map(() => ({ start: false, end: false }));
+    const hints = new Set();
+    const n = slots.map((s) => ({ a: normTime(s.start), b: normTime(s.end) }));
+    n.forEach((x, i) => {
+      if (!TIME_OK.test(x.a) || x.a === "24:00") { bad[i].start = true; hints.add("Ungültige Uhrzeit"); }
+      if (!TIME_OK.test(x.b)) { bad[i].end = true; hints.add("Ungültige Uhrzeit"); }
+      if (!bad[i].start && !bad[i].end && minutes(x.b) <= minutes(x.a)) { bad[i].end = true; hints.add("Ende muss nach Start liegen"); }
+    });
+    n.forEach((x, i) => {
+      if (bad[i].start || bad[i].end) return;
+      n.forEach((y, j) => {
+        if (j === i || bad[j].start || bad[j].end) return;
+        const ya = minutes(y.a), yb = minutes(y.b), xa = minutes(x.a);
+        if ((ya < xa || (ya === xa && j < i)) && yb > xa) { bad[i].start = true; hints.add("Überschneidung mit vorherigem Abschnitt"); }
+      });
+    });
+    return { bad, hints: [...hints] };
   }
 
   _schedule() {
@@ -599,14 +677,17 @@ class SmartHeatingPanel extends HTMLElement {
       .concat(DAYS.filter((x) => x !== day).map((x) => `<option value="${x}">${DAY_NAMES[x]}</option>`)).join("");
     const days = DAYS.map((day) => {
       const slots = dr.week[day];
+      const { bad, hints } = this._slotIssues(slots);
+      const hint = this._dayHint && this._dayHint.day === day ? [this._dayHint.text, ...hints] : hints;
       const rows = slots.map((s, i) => `<div class="slot">
-          <input class="time" data-slot="${day}|${i}|start" value="${esc(s.start)}" placeholder="06:00" maxlength="5">
-          <span>–</span><input class="time" data-slot="${day}|${i}|end" value="${esc(s.end)}" placeholder="08:30" maxlength="5">
+          <input class="time${bad[i].start ? " invalid" : ""}" data-slot="${day}|${i}|start" value="${esc(s.start)}" placeholder="06:00" maxlength="5">
+          <span>–</span><input class="time${bad[i].end ? " invalid" : ""}" data-slot="${day}|${i}|end" value="${esc(s.end)}" placeholder="08:30" maxlength="5">
           <input class="tnum" type="number" step="0.5" min="4" max="35" data-slot="${day}|${i}|temp" value="${esc(s.temp)}"><span>°C</span>
           <button class="icon" data-act="slot_rm" data-day="${day}" data-idx="${i}" title="Entfernen">✕</button></div>`).join("");
       return `<div class="day"><div class="day-head"><b>${DAY_NAMES[day]}</b>
           <span class="copy"><select data-f="copyto_${day}">${copyOpts(day)}</select><button data-act="day_copy" data-day="${day}">Kopieren</button></span></div>
         ${this._dayBar(slots)}${rows || '<div class="sub">Keine Abschnitte – es gilt die Standardtemperatur.</div>'}
+        ${hint.map((h) => `<div class="hint">${esc(h)}</div>`).join("")}
         <button data-act="slot_add" data-day="${day}">+ Abschnitt</button></div>`;
     }).join("");
     const cur = this.status.rooms[dr.rid];
@@ -741,6 +822,9 @@ button:disabled { opacity:.5; cursor:default; }
 label.check.small { font-size:14px; margin:0; }
 code { font-size:12px; background:var(--secondary-background-color, #eee); padding:1px 4px; border-radius:4px; }
 .msg { padding:10px 14px; border-radius:8px; margin-bottom:12px; }
+.content > .msg { position:sticky; top:0; z-index:2; }
+input.invalid { border-color:var(--error-color, #db4437); }
+.hint { color:var(--error-color, #db4437); font-size:13px; margin:4px 0; }
 .msg.error { background:rgba(219,68,55,.12); color:var(--error-color, #db4437); }
 .msg.ok { background:rgba(67,160,71,.12); color:var(--success-color, #43a047); }
 .msg.warn { background:rgba(255,152,0,.12); color:var(--warning-color, #ff9800); margin:8px 0 0; }
