@@ -25,7 +25,7 @@ def test_stages_sorted_and_defaults():
     st = _room(notify_stages=[{"after": 1200}, {"after": 300, "notify": False, "action_entity": "script.x"}])
     assert [s["after"] for s in st["notify_stages"]] == [300, 1200]
     assert st["notify_stages"][1] == {"after": 1200, "notify": True, "action_entity": None,
-                                      "cover_position": None}
+                                      "cover_position": None, "texts": []}
 
 
 @pytest.mark.parametrize("stages", [
@@ -44,7 +44,7 @@ def test_invalid_stages(stages):
 def test_migration_single_notify_after_to_stage():
     r = _room(notify_after=600)
     assert r["notify_after"] == 0 and r["notify_stages"] == [
-        {"after": 600, "notify": True, "action_entity": None, "cover_position": None}]
+        {"after": 600, "notify": True, "action_entity": None, "cover_position": None, "texts": []}]
     assert validate_config({"rooms": {"r": r}})["rooms"]["r"] == r  # stabil
     # vorhandene Stufen haben Vorrang
     r = _room(notify_after=600, notify_stages=[{"after": 120}])
@@ -119,6 +119,7 @@ def _system_cfg():
         "name": "Bad", "thermostats": ["climate.bad"], "window_sensors": ["binary_sensor.bad_f"],
         "notify_stages": [{"after": 300}, {"after": 600}, {"after": 1200},
                           {"after": 1800, "action_entity": "cover.bad"}],
+        "notify_on_close": True,
     }
     for rid in ("kueche", "diele", "bad"):
         data["profiles"]["winter"]["schedules"][rid] = ALL20

@@ -93,39 +93,6 @@ def _service(value: Any) -> str:
     return value
 
 
-DELAY_SECONDS = vol.All(vol.Coerce(int), vol.Range(min=0, max=3600))       # bis 60 min
-COUPLED_DELAY = vol.All(vol.Coerce(int), vol.Range(min=0, max=4 * 3600))   # bis 4 h
-ACTION_ID = _entity_id(("cover", "script", "scene"))
-MAX_STAGES = 10
-
-# Meldestufe: nach `after` Sekunden Nachricht (notify) und/oder Aktion
-# (Rollo schließen/auf Position, Skript, Szene). Nichts wird automatisch zurückgefahren.
-STAGE_SCHEMA = vol.Schema(
-    {
-        vol.Required("after"): vol.All(vol.Coerce(int), vol.Range(min=60, max=24 * 3600)),
-        vol.Optional("notify", default=True): bool,
-        vol.Optional("action_entity", default=None): vol.Any(None, ACTION_ID),
-        vol.Optional("cover_position", default=None): vol.Any(
-            None, vol.All(vol.Coerce(int), vol.Range(min=0, max=100))),
-    }
-)
-
-
-def _stages(value: Any) -> list[dict]:
-    if not isinstance(value, list):
-        raise vol.Invalid("Liste von Meldestufen erwartet")
-    if len(value) > MAX_STAGES:
-        raise vol.Invalid(f"Höchstens {MAX_STAGES} Meldestufen")
-    stages = sorted((STAGE_SCHEMA(v) for v in value), key=lambda st: st["after"])
-    for a, b in zip(stages, stages[1:], strict=False):
-        if a["after"] == b["after"]:
-            raise vol.Invalid("Zwei Meldestufen mit derselben Zeit")
-    for st in stages:
-        if st["cover_position"] is not None and not (st["action_entity"] or "").startswith("cover."):
-            raise vol.Invalid("Rollo-Position nur zusammen mit einer cover-Entität")
-    return stages
-
-
 MAX_TEXTS = 20
 MAX_TEXT_LEN = 300
 
@@ -146,6 +113,41 @@ def _texts(value: Any) -> list[str]:
     if len(out) > MAX_TEXTS:
         raise vol.Invalid(f"Höchstens {MAX_TEXTS} Meldungstexte")
     return out
+
+
+DELAY_SECONDS = vol.All(vol.Coerce(int), vol.Range(min=0, max=3600))       # bis 60 min
+COUPLED_DELAY = vol.All(vol.Coerce(int), vol.Range(min=0, max=4 * 3600))   # bis 4 h
+ACTION_ID = _entity_id(("cover", "script", "scene"))
+MAX_STAGES = 10
+
+# Meldestufe: nach `after` Sekunden Nachricht (notify) und/oder Aktion
+# (Rollo schließen/auf Position, Skript, Szene). Nichts wird automatisch zurückgefahren.
+STAGE_SCHEMA = vol.Schema(
+    {
+        vol.Required("after"): vol.All(vol.Coerce(int), vol.Range(min=60, max=24 * 3600)),
+        vol.Optional("notify", default=True): bool,
+        vol.Optional("action_entity", default=None): vol.Any(None, ACTION_ID),
+        vol.Optional("cover_position", default=None): vol.Any(
+            None, vol.All(vol.Coerce(int), vol.Range(min=0, max=100))),
+        # Textvarianten dieser Meldung (zufällig gewählt); leer = Raumtexte bzw. Standardtext
+        vol.Optional("texts", default=[]): _texts,
+    }
+)
+
+
+def _stages(value: Any) -> list[dict]:
+    if not isinstance(value, list):
+        raise vol.Invalid("Liste von Meldestufen erwartet")
+    if len(value) > MAX_STAGES:
+        raise vol.Invalid(f"Höchstens {MAX_STAGES} Meldestufen")
+    stages = sorted((STAGE_SCHEMA(v) for v in value), key=lambda st: st["after"])
+    for a, b in zip(stages, stages[1:], strict=False):
+        if a["after"] == b["after"]:
+            raise vol.Invalid("Zwei Meldestufen mit derselben Zeit")
+    for st in stages:
+        if st["cover_position"] is not None and not (st["action_entity"] or "").startswith("cover."):
+            raise vol.Invalid("Rollo-Position nur zusammen mit einer cover-Entität")
+    return stages
 
 
 # Kontakt eines anderen Raums, der diesen Raum nach eigener Verzögerung mitsperrt
@@ -177,6 +179,58 @@ def _room_rules(room: dict) -> dict:
     if dup:
         raise vol.Invalid(f"{', '.join(dup)} ist bereits eigener Fensterkontakt dieses Raums")
     return room
+
+
+MAX_RECIPIENTS = 10
+
+
+def _recipient_name(value: Any) -> str:
+    value = vol.Coerce(str)(value).strip()
+    if not value:
+        raise vol.Invalid("Name des Empfängers darf nicht leer sein")
+    if len(value) > 40:
+        raise vol.Invalid("Name des Empfängers zu lang (max. 40 Zeichen)")
+    return value
+
+
+def _target(value: Any) -> str | None:
+    if value is None:
+        return None
+    value = vol.Coerce(str)(value).strip()
+    if len(value) > 64:
+        raise vol.Invalid("Ziel zu lang (max. 64 Zeichen)")
+    return value or None
+
+
+RECIPIENT_SCHEMA = vol.Schema(
+    {
+        vol.Optional("id"): vol.All(str, vol.Length(min=1, max=40)),
+        vol.Required("name"): _recipient_name,
+        vol.Required("service"): _service,
+        vol.Optional("target", default=None): _target,
+    }
+)
+
+
+def _recipients(value: Any) -> list[dict]:
+    """Empfänger (z. B. „ich“, „meine Frau“): eindeutige IDs und Namen."""
+    if not isinstance(value, list):
+        raise vol.Invalid("Liste von Empfängern erwartet")
+    if len(value) > MAX_RECIPIENTS:
+        raise vol.Invalid(f"Höchstens {MAX_RECIPIENTS} Empfänger")
+    out: list[dict] = []
+    ids, names = set(), set()
+    for item in value:
+        rec = RECIPIENT_SCHEMA(item)
+        rec["id"] = rec.get("id") or new_id()
+        if rec["id"] in ids:
+            raise vol.Invalid(f"Empfänger-ID {rec['id']!r} ist doppelt")
+        if rec["name"].casefold() in names:
+            raise vol.Invalid(f"Empfänger {rec['name']!r} existiert bereits")
+        ids.add(rec["id"])
+        names.add(rec["name"].casefold())
+        out.append(rec)
+    return out
 NOTIFY_SECONDS = vol.All(vol.Coerce(int), vol.Range(min=0, max=24 * 3600))  # 0 = aus
 
 
@@ -233,6 +287,8 @@ SETTINGS_SCHEMA = vol.Schema(
         vol.Optional("notify_entity_id", default=None): vol.Any(None, NOTIFY_ENTITY_ID),
         # Änderungen direkt am Thermostat: ignorieren (Plan gilt) oder als manuelle Änderung übernehmen
         vol.Optional("thermostat_changes", default="ignore"): vol.In(("ignore", "adopt")),
+        # Empfänger für Fenster-Meldungen (pro Raum auswählbar)
+        vol.Optional("recipients", default=[]): _recipients,
     }
 )
 
@@ -250,8 +306,10 @@ ROOM_SCHEMA = vol.All(vol.Schema(
         vol.Optional("window_open_delay", default=0): DELAY_SECONDS,
         # Meldung, wenn ein Fenster länger offen ist (0 = keine Meldung)
         vol.Optional("notify_after", default=0): NOTIFY_SECONDS,
-        vol.Optional("notify_on_close", default=True): bool,
+        vol.Optional("notify_on_close", default=False): bool,
         vol.Optional("notify_stages", default=[]): _stages,
+        # Empfänger-IDs (aus den Einstellungen); leer = alter Standarddienst
+        vol.Optional("notify_recipients", default=[]): _unique_list(str),
         # Eigene Meldungstexte (Varianten, zufällig gewählt)
         vol.Optional("notify_texts", default=[]): _texts,
         vol.Optional("notify_close_texts", default=[]): _texts,
@@ -371,7 +429,9 @@ def validate_config(data: Any) -> dict[str, Any]:
     rooms, profiles = cfg["rooms"], cfg["profiles"]
     if cfg["settings"]["active_profile_id"] not in profiles:
         cfg["settings"]["active_profile_id"] = None
+    known = {r["id"] for r in cfg["settings"]["recipients"]}
     for room in rooms.values():
+        room["notify_recipients"] = [i for i in room["notify_recipients"] if i in known]
         if room["profile_override_id"] not in profiles:
             room["profile_override_id"] = None
     for profile in profiles.values():

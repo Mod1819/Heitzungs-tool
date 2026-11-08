@@ -164,19 +164,20 @@ test("Live-Update überschreibt keine laufende Eingabe", async () => {
   assert.equal(t.q("[data-f=manual_temp]").value, "23");        // Eingabe bleibt erhalten
 });
 
-test("Raum: Verzögerung und Meldung in Minuten speichern (Sekunden an API)", async () => {
+test("Raum: Verzögerung in Minuten speichern (Sekunden an API), Meldungen separat", async () => {
   const t = setup(); await tick(); await tick();
   await t.click("[data-act=open_room][data-room=wz]");
   assert.match(t.root.innerHTML, /Sperre erst nach/);
+  assert.equal(t.q("[data-act=rd_add_stage]"), null);          // v1.5: Meldestufen-Editor ist aus der Fenster-Karte entfernt
+  assert.doesNotMatch(t.root.innerHTML, /wieder geschlossen|Meldestufen|Eigene Meldungstexte/);
   t.type("[data-f=window_delay]", "7.5");
-  await t.click("[data-act=rd_add_stage]");            // v1.2: Meldezeit = erste Meldestufe
   await t.click("[data-act=save_window_temp]");
   const c = t.calls.at(-1);
   assert.equal(c.type, "smart_heating/rooms/update");
   assert.equal(c.window_open_delay, 450);
-  assert.equal(c.notify_stages[0].after, 600);
-  assert.equal(c.notify_on_close, true);
   assert.equal(c.window_open_temp, 5);
+  assert.equal("notify_stages" in c, false);
+  assert.equal("notify_on_close" in c, false);
 });
 
 test("Übersicht und Raum zeigen ausstehende Sperre", async () => {
@@ -189,55 +190,139 @@ test("Übersicht und Raum zeigen ausstehende Sperre", async () => {
   assert.match(t.root.innerHTML, /Sperre greift um 07:25/);
 });
 
-test("Einstellungen: Benachrichtigungsdienst speichern, Test erst mit Dienst", async () => {
+test("Einstellungen: Empfänger anlegen und speichern, Test erst nach dem Speichern", async () => {
   const t = setup(); await tick(); await tick();
-  t.hass.services = { notify: { telegram: {}, send_message: {} }, telegram_bot: { send_message: {} } };
+  t.hass.services = { notify: { telegram_daniel: {}, send_message: {} }, telegram_bot: { send_message: {} } };
   await t.click("[data-act=nav][data-view=settings]");
-  assert.ok(t.q("[data-act=notify_test]").disabled);
-  assert.ok(t.root.innerHTML.includes('value="telegram_bot.send_message"'));
-  t.type("[data-f=s_notify]", "notify.telegram");
+  assert.match(t.root.innerHTML, /Empfänger/);
+  assert.ok(t.root.innerHTML.includes('value="telegram_bot.send_message"'));   // Vorschlagsliste
+  assert.equal(t.q("[data-f=s_notify]"), null);                                // alte Felder entfernt
+  await t.click("[data-act=rec_add]");
+  await t.click("[data-act=rec_add]");
+  assert.ok(t.q('[data-act=rec_test]').disabled);                              // ungespeichert
+  assert.match(t.root.innerHTML, /erst speichern/);
+  t.type('[data-rec="0|name"]', " Ich ");
+  t.type('[data-rec="0|service"]', "notify.telegram_daniel");
+  t.type('[data-rec="1|name"]', "Meine Frau");
+  t.type('[data-rec="1|service"]', "telegram_bot.send_message");
+  t.type('[data-rec="1|target"]', "-12345");
   await t.click("[data-act=settings_save]");
   const c = t.calls.at(-1);
-  assert.equal(c.notify_service, "notify.telegram");
-  assert.equal(c.notify_entity_id, null);
+  assert.equal(c.type, "smart_heating/settings/update");
+  assert.deepEqual(c.recipients, [
+    { name: "Ich", service: "notify.telegram_daniel", target: null },
+    { name: "Meine Frau", service: "telegram_bot.send_message", target: "-12345" },
+  ]);
+  assert.equal("notify_service" in c, false);
 });
 
-test("Meldestufen und gekoppelte Kontakte bearbeiten und speichern", async () => {
+test("Einstellungen: Empfänger ohne Versandweg wird abgefangen; Test sendet recipient_id", async () => {
+  const t = setup({}); await tick(); await tick();
+  const snap = JSON.parse(JSON.stringify(SNAP));
+  snap.config.settings.recipients = [{ id: "ich", name: "Ich", service: "notify.a", target: null }];
+  snap.config.settings.notify_service = "notify.alt";
+  t.push(snap); await tick();
+  await t.click("[data-act=nav][data-view=settings]");
+  assert.match(t.root.innerHTML, /Alter Standard-Dienst: <code>notify\.alt<\/code>/);
+  assert.equal(t.q("[data-act=rec_test]").disabled, false);
+  await t.click("[data-act=rec_test]");
+  assert.deepEqual(t.calls.at(-1), { type: "smart_heating/notify/test", recipient_id: "ich" });
+  await t.click("[data-act=rec_add]");
+  const before = t.calls.length;
+  await t.click("[data-act=settings_save]");
+  assert.equal(t.calls.length, before);
+  assert.match(t.q(".msg.error").textContent, /Name und Versandweg/);
+  await t.click('[data-act=rec_rm][data-idx="1"]');
+  await t.click("[data-act=settings_save]");
+  assert.deepEqual(t.calls.at(-1).recipients, [{ id: "ich", name: "Ich", service: "notify.a", target: null }]);
+});
+
+test("Gekoppelte Kontakte bearbeiten und speichern", async () => {
   const t = setup(); await tick(); await tick();
   await t.click("[data-act=open_room][data-room=wz]");
-  assert.match(t.root.innerHTML, /Keine Meldestufen/);
-  await t.click("[data-act=rd_add_stage]");
-  await t.click("[data-act=rd_add_stage]");
-  t.type('[data-rd="stages|0|after"]', "5");
-  t.type('[data-rd="stages|1|after"]', "30");
-  t.type('[data-rd="stages|1|action_entity"]', "cover.bad");
-  const cb = t.q('[data-rd="stages|1|notify"]');
-  cb.checked = false; cb.dispatchEvent(new t.w.Event("change", { bubbles: true }));
   await t.click("[data-act=rd_add_coupled]");                     // Rendern behält Entwurf
-  assert.ok(t.q('[data-rd="stages|1|cover_position"]'));          // Position erst bei cover.*
   t.type('[data-rd="coupled|0|entity_id"]', "binary_sensor.terrasse");
   t.type('[data-rd="coupled|0|delay"]', "15");
   assert.match(t.root.innerHTML, /ungespeicherte Änderungen/);
   await t.click("[data-act=save_window_temp]");
   const c = t.calls.at(-1);
   assert.equal(c.type, "smart_heating/rooms/update");
-  assert.deepEqual(c.notify_stages, [
-    { after: 300, notify: true, action_entity: null, cover_position: null },
-    { after: 1800, notify: false, action_entity: "cover.bad", cover_position: null },
-  ]);
   assert.deepEqual(c.coupled_sensors, [{ entity_id: "binary_sensor.terrasse", delay: 900 }]);
   assert.equal("notify_after" in c, false);
 });
 
-test("Ungültige Meldestufe wird im Panel abgefangen", async () => {
+test("Meldungen: hinzufügen, Texte, Empfänger, Aktion und Speichern", async () => {
+  const t = setup(); await tick(); await tick();
+  const snap = JSON.parse(JSON.stringify(SNAP));
+  snap.config.settings.recipients = [
+    { id: "ich", name: "Ich", service: "notify.a", target: null },
+    { id: "frau", name: "Meine Frau", service: "notify.b", target: null },
+  ];
+  t.push(snap); await tick();
+  await t.click("[data-act=open_room][data-room=wz]");
+  assert.match(t.root.innerHTML, /Meldungen bei offenem Fenster/);
+  assert.match(t.root.innerHTML, /Meine Frau/);
+  await t.click("[data-act=msg_add]");
+  await t.click("[data-act=msg_add]");
+  assert.equal(t.q('[data-rd="stages|1|after"]').value, "20");    // letzte + 10 min
+  t.type('[data-rd="stages|0|after"]', "5");
+  assert.equal(t.q('[data-rd="stages|0|texts"]').tagName, "TEXTAREA");
+  t.type('[data-rd="stages|0|texts"]', "  Fenster in {raum} zu!  \n\nNoch offen: {fenster}\n");
+  t.type('[data-rd="stages|1|after"]', "30");
+  t.type('[data-rd="stages|1|action_entity"]', "cover.bad");
+  const cb = t.q('[data-rd="stages|1|notify"]');
+  cb.checked = false; cb.dispatchEvent(new t.w.Event("change", { bubbles: true }));
+  const rcp = t.q('[data-rcp="frau"]');
+  rcp.checked = true; rcp.dispatchEvent(new t.w.Event("change", { bubbles: true }));
+  await t.click("[data-act=msg_add]");                             // Rendern behält Entwurf
+  await t.click('[data-act=msg_rm][data-idx="2"]');
+  assert.ok(t.q('[data-rd="stages|1|cover_position"]'));            // Position erst bei cover.*
+  assert.equal(t.q('[data-rcp="frau"]').checked, true);
+  assert.match(t.root.innerHTML, /ungespeicherte Änderungen/);
+  await t.click("[data-act=save_msgs]");
+  const c = t.calls.at(-1);
+  assert.equal(c.type, "smart_heating/rooms/update");
+  assert.deepEqual(c.notify_recipients, ["frau"]);
+  assert.deepEqual(c.notify_stages, [
+    { after: 300, notify: true, action_entity: null, cover_position: null, texts: ["Fenster in {raum} zu!", "Noch offen: {fenster}"] },
+    { after: 1800, notify: false, action_entity: "cover.bad", cover_position: null, texts: [] },
+  ]);
+  assert.deepEqual(c.notify_texts, []);
+  assert.equal(c.notify_on_close, false);
+});
+
+test("Meldungen: Raumtexte werden vorbelegt, Test sendet room_id und stage", async () => {
+  const t = setup(); await tick(); await tick();
+  const snap = JSON.parse(JSON.stringify(SNAP));
+  Object.assign(snap.config.rooms.wz, { notify_texts: ["Alter Raumtext"], notify_stages: [{ after: 600, notify: true, action_entity: null, cover_position: null, texts: [] }] });
+  t.push(snap); await tick();
+  await t.click("[data-act=open_room][data-room=wz]");
+  assert.equal(t.q('[data-rd="stages|0|texts"]').value, "Alter Raumtext");
+  await t.click('[data-act=msg_test][data-idx="0"]');
+  assert.deepEqual(t.calls.at(-1), { type: "smart_heating/notify/test", room_id: "wz", stage: 0 });
+  // ungespeicherte Änderung: Test wird abgelehnt
+  t.type('[data-rd="stages|0|texts"]', "Neu");
+  const before = t.calls.length;
+  await t.click('[data-act=msg_test][data-idx="0"]');
+  assert.equal(t.calls.length, before);
+  assert.match(t.q(".msg.error").textContent, /zuerst speichern/);
+  await t.click("[data-act=save_msgs]");
+  assert.deepEqual(t.calls.at(-1).notify_stages[0].texts, ["Neu"]);
+  assert.deepEqual(t.calls.at(-1).notify_texts, []);
+});
+
+test("Meldungen: ohne Empfänger Hinweis mit Link zu den Einstellungen; ungültige Minuten werden abgefangen", async () => {
   const t = setup(); await tick(); await tick();
   await t.click("[data-act=open_room][data-room=wz]");
-  await t.click("[data-act=rd_add_stage]");
+  assert.match(t.root.innerHTML, /Empfänger in den Einstellungen anlegen/);
+  await t.click("[data-act=msg_add]");
   t.type('[data-rd="stages|0|after"]', "0");
   const before = t.calls.length;
-  await t.click("[data-act=save_window_temp]");
+  await t.click("[data-act=save_msgs]");
   assert.equal(t.calls.length, before);
   assert.match(t.q(".msg.error").textContent, /mindestens 1 Minute/);
+  await t.click("button[data-act=nav][data-view=settings]:not(.tab)");
+  assert.match(t.root.innerHTML, /<h2>Empfänger<\/h2>/);
 });
 
 test("Gekoppelte Sperre wird mit Ursache angezeigt", async () => {
@@ -356,16 +441,3 @@ test("Einstellungen: Thermostat-Änderungen ignorieren/übernehmen wird gespeich
   assert.equal(c.thermostat_changes, "adopt");
 });
 
-test("Raum: eigene Meldungstexte werden zeilenweise als Arrays gespeichert", async () => {
-  const t = setup(); await tick(); await tick();
-  await t.click("[data-act=open_room][data-room=wz]");
-  assert.match(t.root.innerHTML, /Eigene Meldungstexte \(Varianten\)/);
-  assert.equal(t.q("[data-f=texts_open]").tagName, "TEXTAREA");
-  t.type("[data-f=texts_open]", "  Fenster in {raum} zu!  \n\nNoch offen: {fenster}\n");
-  t.type("[data-f=texts_close]", "Alles zu.");
-  await t.click("[data-act=save_window_temp]");
-  const c = t.calls.at(-1);
-  assert.equal(c.type, "smart_heating/rooms/update");
-  assert.deepEqual(c.notify_texts, ["Fenster in {raum} zu!", "Noch offen: {fenster}"]);
-  assert.deepEqual(c.notify_close_texts, ["Alles zu."]);
-});

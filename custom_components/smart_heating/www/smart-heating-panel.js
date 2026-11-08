@@ -166,16 +166,25 @@ class SmartHeatingPanel extends HTMLElement {
     if (!el.dataset.rd || !this._rd) return;
     const [list, idx, field] = el.dataset.rd.split("|");
     const item = this._rd[list][Number(idx)];
-    if (item) { item[field] = el.type === "checkbox" ? el.checked : el.value; this._rd.dirty = true; }
+    if (item) { item[field] = el.type === "checkbox" ? el.checked : el.value; this._rdMark(list); }
   }
 
-  /** Bearbeitungsstand für Meldestufen und gekoppelte Kontakte (Minuten im UI). */
+  /** Markiert den Entwurf als geändert: Kontakte (Fenster-Karte) und Meldungen (Meldungs-Karte) getrennt. */
+  _rdMark(list) { if (list === "coupled") this._rd.dirtyC = true; else this._rd.dirtyS = true; }
+
+  /** Bearbeitungsstand für Meldungen (Minuten, Textvarianten, Empfänger) und gekoppelte Kontakte. */
   _roomDraft(rid) {
     const room = this.cfg.rooms[rid];
-    if (!this._rd || this._rd.rid !== rid || !this._rd.dirty) {
+    if (!this._rd || this._rd.rid !== rid || !(this._rd.dirtyS || this._rd.dirtyC)) {
+      // Raumweite Texte (älteres Modell) vorbelegen, damit beim Speichern nichts verloren geht
+      const fallback = (room.notify_texts || []).join("\n");
       this._rd = {
-        rid, dirty: false,
-        stages: room.notify_stages.map((st) => ({ after: toMin(st.after), notify: st.notify, action_entity: st.action_entity || "", cover_position: st.cover_position ?? "" })),
+        rid, dirtyS: false, dirtyC: false,
+        recipients: [...(room.notify_recipients || [])],
+        stages: room.notify_stages.map((st) => ({
+          after: toMin(st.after), notify: st.notify, action_entity: st.action_entity || "", cover_position: st.cover_position ?? "",
+          texts: (st.texts || []).length ? st.texts.join("\n") : fallback,
+        })),
         coupled: room.coupled_sensors.map((c) => ({ entity_id: c.entity_id, delay: toMin(c.delay) })),
       };
     }
@@ -191,6 +200,11 @@ class SmartHeatingPanel extends HTMLElement {
     const el = e.target;
     if (el.dataset.f) this._form[el.dataset.f] = el.type === "checkbox" ? el.checked : el.value;
     this._rdInput(el);
+    if (el.dataset.rec) {
+      const [i, field] = el.dataset.rec.split("|");
+      const row = this._recipientRows()[Number(i)];
+      if (row) row[field] = el.value;
+    }
     if (el.dataset.slot && this._draft) {
       const [day, idx, field] = el.dataset.slot.split("|");
       const slot = this._draft.week[day][Number(idx)];
@@ -215,6 +229,12 @@ class SmartHeatingPanel extends HTMLElement {
     const el = e.target;
     if (el.dataset.f && el.type === "checkbox") this._form[el.dataset.f] = el.checked;
     if (el.type === "checkbox") this._rdInput(el);
+    if (el.dataset.rcp && this._rd) {
+      const set = new Set(this._rd.recipients);
+      if (el.checked) set.add(el.dataset.rcp); else set.delete(el.dataset.rcp);
+      this._rd.recipients = [...set];
+      this._rd.dirtyS = true;
+    }
     this._normSlotField(el);
     const act = el.dataset.change;
     if (!act) return;
@@ -288,43 +308,64 @@ class SmartHeatingPanel extends HTMLElement {
           const room = this.cfg.rooms[this._roomId];
           const delay = parseNum(this.f("window_delay", toMin(room.window_open_delay)));
           const rd = this._roomDraft(this._roomId);
+          const coupled = rd.coupled.filter((c) => String(c.entity_id || "").trim()).map((c) => ({
+            entity_id: String(c.entity_id).trim(), delay: Math.round((parseNum(c.delay) ?? NaN) * 60),
+          }));
+          if (delay === null || coupled.some((c) => !Number.isFinite(c.delay))) {
+            this._error = "Bitte Minuten als Zahl eingeben"; break;
+          }
+          await this._call("rooms/update", {
+            room_id: this._roomId,
+            window_open_temp: parseNum(this.f("window_temp", room.window_open_temp)),
+            window_open_delay: Math.round(delay * 60),
+            coupled_sensors: coupled,
+          }, "Fenster-Einstellungen gespeichert");
+          ["window_temp", "window_delay"].forEach((k) => delete this._form[k]);
+          rd.dirtyC = false;
+          if (!rd.dirtyS) this._rd = null;
+          break;
+        }
+        case "save_msgs": {
+          const rd = this._roomDraft(this._roomId);
+          const lines = (v) => String(v ?? "").split("\n").map((x) => x.trim()).filter(Boolean);
           const stages = rd.stages.map((st) => ({
             after: Math.round((parseNum(st.after) ?? NaN) * 60), notify: !!st.notify,
             action_entity: String(st.action_entity || "").trim() || null,
             cover_position: String(st.cover_position ?? "").trim() === "" ? null : parseNum(st.cover_position),
+            texts: lines(st.texts),
           }));
-          const coupled = rd.coupled.filter((c) => String(c.entity_id || "").trim()).map((c) => ({
-            entity_id: String(c.entity_id).trim(), delay: Math.round((parseNum(c.delay) ?? NaN) * 60),
-          }));
-          if (delay === null || stages.some((st) => !Number.isFinite(st.after) || st.after < 60) || coupled.some((c) => !Number.isFinite(c.delay))) {
-            this._error = "Bitte Minuten als Zahl eingeben (Meldestufen mindestens 1 Minute)"; break;
+          if (stages.some((st) => !Number.isFinite(st.after) || st.after < 60)) {
+            this._error = "Bitte Minuten als Zahl eingeben (mindestens 1 Minute)"; break;
           }
-          const lines = (v) => String(v).split("\n").map((x) => x.trim()).filter(Boolean);
           await this._call("rooms/update", {
             room_id: this._roomId,
-            notify_texts: lines(this.f("texts_open", (room.notify_texts || []).join("\n"))),
-            notify_close_texts: lines(this.f("texts_close", (room.notify_close_texts || []).join("\n"))),
-            window_open_temp: parseNum(this.f("window_temp", room.window_open_temp)),
-            window_open_delay: Math.round(delay * 60),
+            notify_recipients: rd.recipients,
             notify_stages: stages,
-            notify_on_close: !!this.f("notify_close", room.notify_on_close),
-            coupled_sensors: coupled,
-          }, "Fenster-Einstellungen gespeichert");
-          ["window_temp", "window_delay", "notify_close", "texts_open", "texts_close"].forEach((k) => delete this._form[k]);
-          this._rd = null;
+            notify_texts: [],
+            notify_on_close: false,
+          }, "Meldungen gespeichert");
+          rd.dirtyS = false;
+          if (!rd.dirtyC) this._rd = null;
           break;
         }
-        case "rd_add_stage": {
+        case "msg_test": {
+          const rd = this._roomDraft(this._roomId);
+          if (rd.dirtyS) { this._error = "Bitte zuerst speichern"; break; }
+          await this._call("notify/test", { room_id: this._roomId, stage: Number(d.idx) }, "Testnachricht gesendet");
+          break;
+        }
+        case "msg_add": {
           const rd = this._roomDraft(this._roomId);
           const last = rd.stages[rd.stages.length - 1];
-          rd.stages.push({ after: last ? (parseNum(last.after) || 0) + 10 : 10, notify: true, action_entity: "", cover_position: "" });
-          rd.dirty = true; break;
+          rd.stages.push({ after: last ? (parseNum(last.after) || 0) + 10 : 10, notify: true, action_entity: "", cover_position: "", texts: "" });
+          rd.dirtyS = true; break;
         }
-        case "rd_rm_stage": { const rd = this._roomDraft(this._roomId); rd.stages.splice(Number(d.idx), 1); rd.dirty = true; break; }
-        case "rd_add_coupled": { const rd = this._roomDraft(this._roomId); rd.coupled.push({ entity_id: "", delay: 15 }); rd.dirty = true; break; }
-        case "rd_rm_coupled": { const rd = this._roomDraft(this._roomId); rd.coupled.splice(Number(d.idx), 1); rd.dirty = true; break;
-        }
-        case "notify_test": await this._call("notify/test", {}, "Testnachricht gesendet"); break;
+        case "msg_rm": { const rd = this._roomDraft(this._roomId); rd.stages.splice(Number(d.idx), 1); rd.dirtyS = true; break; }
+        case "rd_add_coupled": { const rd = this._roomDraft(this._roomId); rd.coupled.push({ entity_id: "", delay: 15 }); rd.dirtyC = true; break; }
+        case "rd_rm_coupled": { const rd = this._roomDraft(this._roomId); rd.coupled.splice(Number(d.idx), 1); rd.dirtyC = true; break; }
+        case "rec_add": this._recipientRows().push({ name: "", service: "", target: "" }); break;
+        case "rec_rm": this._recipientRows().splice(Number(d.idx), 1); break;
+        case "rec_test": await this._call("notify/test", { recipient_id: d.id }, "Testnachricht gesendet"); break;
         case "save_room_outdoor": {
           const room = this.cfg.rooms[this._roomId];
           const c = room.outdoor_curve;
@@ -402,6 +443,11 @@ class SmartHeatingPanel extends HTMLElement {
       if (points.some((p) => p.length !== 2 || p.includes(null))) { this._error = "Stützpunkte im Format 12:0; 14:0,5; 16:1"; return; }
     }
     const sensor = (this.f("s_sensor", s.outdoor_sensor || "") || "").trim() || null;
+    const recipients = this._recipientRows().map((r) => {
+      const rec = { name: String(r.name || "").trim(), service: String(r.service || "").trim(), target: String(r.target || "").trim() || null };
+      return r.id ? { id: r.id, ...rec } : rec;
+    });
+    if (recipients.some((r) => !r.name || !r.service)) { this._error = "Bitte für jeden Empfänger Name und Versandweg angeben"; return; }
     await this._call("settings/update", {
       outdoor_sensor: sensor,
       outdoor_enabled: !!this.f("s_enabled", s.outdoor_enabled),
@@ -409,10 +455,15 @@ class SmartHeatingPanel extends HTMLElement {
       unknown_window_policy: this.f("s_policy", s.unknown_window_policy),
       default_temp: parseNum(this.f("s_default", s.default_temp)),
       thermostat_changes: this.f("s_thermo", s.thermostat_changes) === "adopt" ? "adopt" : "ignore",
-      notify_service: (this.f("s_notify", s.notify_service || "") || "").trim() || null,
-      notify_entity_id: (this.f("s_notify_entity", s.notify_entity_id || "") || "").trim() || null,
+      recipients,
     }, "Einstellungen gespeichert");
     this.clearForm("s_");
+  }
+
+  /** Bearbeitbare Empfängerliste der Einstellungen (Entwurf bis zum Speichern). */
+  _recipientRows() {
+    if (!this._form.s_recipients) this._form.s_recipients = (this.cfg.settings.recipients || []).map((r) => ({ id: r.id, name: r.name, service: r.service, target: r.target || "" }));
+    return this._form.s_recipients;
   }
 
   async _ensureDraft() {
@@ -535,6 +586,37 @@ class SmartHeatingPanel extends HTMLElement {
     }).join("") || '<div class="sub">Keine zugeordnet.</div>';
   }
 
+  _messagesCard(room, rd) {
+    const settings = this.cfg.settings;
+    const recipients = settings.recipients || [];
+    const recipientBox = recipients.length
+      ? recipients.map((r) => `<label class="check small"><input type="checkbox" data-rcp="${esc(r.id)}" ${rd.recipients.includes(r.id) ? "checked" : ""}> ${esc(r.name)}</label>`).join("")
+      : '<span class="sub">Noch keine Empfänger angelegt.</span> <button data-act="nav" data-view="settings">Empfänger in den Einstellungen anlegen</button>';
+    const noTarget = !rd.recipients.length
+      ? (settings.notify_service
+        ? `<div class="sub">Kein Empfänger gewählt – es wird der alte Standarddienst <code>${esc(settings.notify_service)}</code> verwendet.</div>`
+        : '<div class="sub">Kein Empfänger gewählt – es wird nur das Event <code>smart_heating_window_alert</code> ausgelöst.</div>')
+      : "";
+    const blocks = rd.stages.map((st, i) => `<div class="msg-block">
+        <div class="msg-head"><label class="inline">Nach<input type="number" step="1" min="1" max="1440" data-rd="stages|${i}|after" value="${esc(st.after)}">Minuten</label></div>
+        <label>Textvarianten – ein Satz pro Zeile<textarea rows="3" data-rd="stages|${i}|texts" placeholder="Leer = Standardtext">${esc(st.texts)}</textarea></label>
+        <label class="check small"><input type="checkbox" data-rd="stages|${i}|notify" ${st.notify ? "checked" : ""}> Nachricht senden</label>
+        <div class="stage">
+          <input class="action" list="dl-action" data-rd="stages|${i}|action_entity" value="${esc(st.action_entity)}" placeholder="Aktion (optional): cover./script./scene.">
+          ${String(st.action_entity || "").startsWith("cover.") ? `<label class="inline">Position<input type="number" min="0" max="100" data-rd="stages|${i}|cover_position" value="${esc(st.cover_position)}" placeholder="zu">%</label>` : ""}
+        </div>
+        <div class="form-row"><button data-act="msg_test" data-idx="${i}">Test senden</button><button data-act="msg_rm" data-idx="${i}">Entfernen</button></div>
+      </div>`).join("") || '<div class="sub">Keine Meldungen.</div>';
+    return `<div class="card"><h3>Meldungen bei offenem Fenster</h3>
+        ${this.entityOptions("dl-action", ["cover", "script", "scene"])}
+        <div class="recipients"><b>Empfänger:</b> ${recipientBox}</div>
+        ${noTarget}
+        ${blocks}
+        <div class="form-row"><button data-act="msg_add">+ Meldung</button></div>
+        <div class="sub">Pro Meldung wird zufällig eine Variante gewählt, nie zweimal dieselbe hintereinander. Platzhalter: <code>{raum}</code>, <code>{fenster}</code>, <code>{minuten}</code>, <code>{stufe}</code>, <code>{temperatur}</code>, <code>{solltemperatur}</code>. Ein Rollo wird geschlossen bzw. auf die Position gefahren und <b>nicht</b> automatisch wieder hochgefahren – kein Rollo an Türen eintragen, durch die man hinausgeht.</div>
+        <div class="form-row"><button class="primary" data-act="save_msgs">Speichern</button>${rd.dirtyS ? '<span class="sub">ungespeicherte Änderungen</span>' : ""}</div></div>`;
+  }
+
   _room() {
     const rid = this._roomId;
     const room = this.cfg.rooms[rid];
@@ -579,23 +661,6 @@ class SmartHeatingPanel extends HTMLElement {
           <label>Fenster-offen-Temperatur (°C)<input type="number" step="0.5" min="4" max="35" data-f="window_temp" value="${esc(this.f("window_temp", room.window_open_temp))}"></label>
           <label>Sperre erst nach (Minuten, 0 = sofort)<input type="number" step="0.5" min="0" max="60" data-f="window_delay" value="${esc(this.f("window_delay", toMin(room.window_open_delay)))}"></label>
         </div>
-        <h3>Meldestufen</h3>
-        ${this.entityOptions("dl-action", ["cover", "script", "scene"])}
-        ${rd.stages.map((st, i) => `<div class="stage">
-          <span class="stage-no">${i + 1}.</span>
-          <label class="inline">nach<input type="number" step="1" min="1" max="1440" data-rd="stages|${i}|after" value="${esc(st.after)}">min</label>
-          <label class="check small"><input type="checkbox" data-rd="stages|${i}|notify" ${st.notify ? "checked" : ""}> Nachricht</label>
-          <input class="action" list="dl-action" data-rd="stages|${i}|action_entity" value="${esc(st.action_entity)}" placeholder="Aktion (optional): cover./script./scene.">
-          ${String(st.action_entity || "").startsWith("cover.") ? `<label class="inline">Position<input type="number" min="0" max="100" data-rd="stages|${i}|cover_position" value="${esc(st.cover_position)}" placeholder="zu">%</label>` : ""}
-          <button class="icon" data-act="rd_rm_stage" data-idx="${i}" title="Stufe entfernen">✕</button></div>`).join("") || '<div class="sub">Keine Meldestufen – keine Meldungen.</div>'}
-        <button data-act="rd_add_stage">+ Meldestufe</button>
-        <label class="check"><input type="checkbox" data-f="notify_close" ${this.f("notify_close", room.notify_on_close) ? "checked" : ""}> Meldung, wenn wieder geschlossen</label>
-        <div class="sub">Ein Rollo wird geschlossen bzw. auf die Position gefahren und <b>nicht</b> automatisch wieder hochgefahren. Kein Rollo an Türen eintragen, durch die man hinausgeht.</div>
-        ${rd.stages.some((st) => st.notify) && !this.cfg.settings.notify_service ? '<div class="sub">Kein Benachrichtigungsdienst eingestellt – es wird nur das Event <code>smart_heating_window_alert</code> ausgelöst (Einstellungen).</div>' : ""}
-        <details data-keep="texts" ${this._openDetails.texts ? "open" : ""}><summary>Eigene Meldungstexte (Varianten)</summary>
-          <label>Fenster zu lange offen (ein Satz pro Zeile)<textarea rows="4" data-f="texts_open" placeholder="Leer = Standardtext">${esc(this.f("texts_open", (room.notify_texts || []).join("\n")))}</textarea></label>
-          <label>Wieder geschlossen (ein Satz pro Zeile)<textarea rows="4" data-f="texts_close" placeholder="Leer = Standardtext">${esc(this.f("texts_close", (room.notify_close_texts || []).join("\n")))}</textarea></label>
-          <div class="sub">Pro Meldung wird zufällig ein Satz gewählt, nie zweimal derselbe hintereinander. Platzhalter: <code>{raum}</code>, <code>{fenster}</code>, <code>{minuten}</code>, <code>{stufe}</code>, <code>{temperatur}</code> (aktuelle Solltemperatur), <code>{solltemperatur}</code> (gewünschte Temperatur). Bei Stufen mit Aktion wird deren Hinweis angehängt.</div></details>
         <h3>Mitsperren durch Kontakte anderer Räume</h3>
         <div class="sub">Z. B. Küche/Flur: Wenn die Terrassentür im Wohnzimmer länger offen ist, wird dieser Raum ebenfalls abgesenkt. Meldungen kommen nur vom Raum mit dem Fenster.</div>
         ${this.entityOptions("dl-coupled", ["binary_sensor", "input_boolean"], true)}
@@ -605,7 +670,8 @@ class SmartHeatingPanel extends HTMLElement {
           <span class="sub">${c.entity_id ? `${esc(this.sensorOwner(c.entity_id))} · ${esc(WINDOW_NAMES[(r.coupled || {})[c.entity_id]] || "–")}` : ""}</span>
           <button class="icon" data-act="rd_rm_coupled" data-idx="${i}" title="Entfernen">✕</button></div>`).join("")}
         <button data-act="rd_add_coupled">+ Gekoppelter Kontakt</button>
-        <div class="form-row"><button class="primary" data-act="save_window_temp">Fenster-Einstellungen speichern</button>${rd.dirty ? '<span class="sub">ungespeicherte Änderungen</span>' : ""}</div></div>
+        <div class="form-row"><button class="primary" data-act="save_window_temp">Fenster-Einstellungen speichern</button>${rd.dirtyC ? '<span class="sub">ungespeicherte Änderungen</span>' : ""}</div></div>
+      ${this._messagesCard(room, rd)}
       <div class="card"><h3>Batterien (optional, manuell)</h3>
         <div class="sub">Falls die Batterie automatisch nicht gefunden wird (z. B. Gerät keinem Bereich zugeordnet), hier den Batterie-Eintrag des Fensterkontakts/Thermostats eintragen.</div>
         ${this._batteryList(room)}
@@ -727,6 +793,14 @@ class SmartHeatingPanel extends HTMLElement {
     }
     const table = [6, 8, 10, 12, 14, 16, 18, 20, 22].map((x) => `<tr><td>${x} °C</td><td>${num(outdoorReduction(preview, x))} K</td></tr>`).join("");
     const enabled = !!this.f("s_enabled", s.outdoor_enabled);
+    const saved = new Set((s.recipients || []).map((r) => r.id));
+    const rows = this._recipientRows().map((r, i) => `<div class="stage">
+        <input data-rec="${i}|name" value="${esc(r.name)}" placeholder="Name, z. B. Ich">
+        <input class="action" list="dl-notify" data-rec="${i}|service" value="${esc(r.service)}" placeholder="Versandweg, z. B. notify.telegram_daniel">
+        <input data-rec="${i}|target" value="${esc(r.target)}" placeholder="nur bei telegram_bot: Chat-ID">
+        <button data-act="rec_test" data-id="${esc(r.id || "")}" ${r.id && saved.has(r.id) ? "" : "disabled"}>Test senden</button>
+        ${r.id && saved.has(r.id) ? "" : '<span class="sub">erst speichern</span>'}
+        <button class="icon" data-act="rec_rm" data-idx="${i}" title="Empfänger entfernen">✕</button></div>`).join("");
     return `<div class="card"><h2>Außentemperaturregelung</h2>
         <label class="check"><input type="checkbox" data-f="s_enabled" ${enabled ? "checked" : ""}> Dynamische Absenkung aktiv</label>
         <label>Außentemperatursensor${this.entityOptions("dl-out", ["sensor"])}<input list="dl-out" data-f="s_sensor" value="${esc(this.f("s_sensor", s.outdoor_sensor || ""))}" placeholder="sensor.aussentemperatur"></label>
@@ -749,13 +823,13 @@ class SmartHeatingPanel extends HTMLElement {
           <select data-f="s_thermo"><option value="ignore" ${this.f("s_thermo", s.thermostat_changes) !== "adopt" ? "selected" : ""}>ignorieren – Zeitplan/Panel gilt immer (empfohlen)</option>
           <option value="adopt" ${this.f("s_thermo", s.thermostat_changes) === "adopt" ? "selected" : ""}>als manuelle Änderung übernehmen</option></select></label>
         <div class="sub">Manuelle Werte setzt man dann im Panel. Setzt ein Gerät seinen eigenen Wert dauerhaft zurück, wird nach 3 Versuchen aufgegeben (Status „nicht bestätigt“).</div></div>
-      <div class="card"><h2>Benachrichtigung (Fenster zu lange offen)</h2>
-        <label>Dienst, z. B. notify.telegram oder telegram_bot.send_message${this.serviceOptions()}
-          <input list="dl-notify" data-f="s_notify" value="${esc(this.f("s_notify", s.notify_service || ""))}" placeholder="leer = nur Event"></label>
-        <label>Notify-Entität (nur für notify.send_message)${this.entityOptions("dl-notify-ent", ["notify"])}
-          <input list="dl-notify-ent" data-f="s_notify_entity" value="${esc(this.f("s_notify_entity", s.notify_entity_id || ""))}" placeholder="optional"></label>
-        <div class="form-row"><button data-act="notify_test" ${s.notify_service ? "" : "disabled"}>Testnachricht senden</button></div>
-        <div class="sub">Meldezeit pro Raum in der Raumansicht. Zusätzlich wird immer das Event <code>smart_heating_window_alert</code> ausgelöst (für eigene Automationen).</div></div>
+      <div class="card"><h2>Empfänger</h2>
+        <div class="sub">Wer bekommt Meldungen? Pro Raum wählst du aus, welche Empfänger Nachrichten erhalten.</div>
+        ${this.serviceOptions()}
+        ${rows || '<div class="sub">Noch keine Empfänger.</div>'}
+        <div class="form-row"><button data-act="rec_add">+ Empfänger</button></div>
+        ${s.notify_service ? `<div class="sub">Alter Standard-Dienst: <code>${esc(s.notify_service)}</code>${s.notify_entity_id ? ` (${esc(s.notify_entity_id)})` : ""} (wird verwendet, solange ein Raum keine Empfänger hat)</div>` : ""}
+        <div class="sub">Zusätzlich wird immer das Event <code>smart_heating_window_alert</code> ausgelöst (für eigene Automationen).</div></div>
       <div class="card sticky"><button class="primary" data-act="settings_save">Einstellungen speichern</button></div>`;
   }
 
@@ -835,6 +909,10 @@ button:disabled { opacity:.5; cursor:default; }
 .stage { display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:6px 0; border-bottom:1px solid var(--divider-color); }
 .stage-no { font-weight:500; min-width:20px; }
 .stage input.action { flex:1 1 220px; }
+.msg-block { padding:10px 0; border-bottom:1px solid var(--divider-color); }
+.msg-block textarea { width:100%; box-sizing:border-box; }
+.msg-head { margin-bottom:6px; }
+.recipients { display:flex; flex-wrap:wrap; align-items:center; gap:8px 16px; padding:6px 0; }
 .stage label.inline input { width:70px; margin:0 4px; }
 label.check.small { font-size:14px; margin:0; }
 code { font-size:12px; background:var(--secondary-background-color, #eee); padding:1px 4px; border-radius:4px; }

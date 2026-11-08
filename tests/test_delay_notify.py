@@ -81,7 +81,7 @@ def test_notify_service_validation(value):
 
 def _data(**rooms_extra):
     data = copy.deepcopy(CFG)
-    data["rooms"]["wz"].update({"window_open_delay": 300, "notify_after": 600})
+    data["rooms"]["wz"].update({"window_open_delay": 300, "notify_after": 600, "notify_on_close": True})
     data["settings"]["notify_service"] = "notify.telegram"
     for rid, extra in rooms_extra.items():
         data["rooms"][rid].update(extra)

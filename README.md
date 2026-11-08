@@ -270,3 +270,21 @@ automation:
 - Platzhalter: `{raum}`, `{fenster}`, `{minuten}`, `{stufe}`, `{temperatur}` (wirksame Temperatur), `{solltemperatur}` (gewünschte Temperatur). Unbekannte Platzhalter und einzelne Klammern bleiben unverändert stehen.
 - Bei Stufen mit Aktion wird deren Hinweis (z. B. „Rollo wird geschlossen.“) an die Meldung angehängt.
 - Im Panel: Raumansicht, Abschnitt „Eigene Meldungstexte (Varianten)“, ein Satz pro Zeile.
+
+## v1.5: Empfänger & Meldungen pro Raum
+
+- **Einstellungen → Empfänger**: Empfänger anlegen (z. B. „Ich“, „Meine Frau“) mit Name, Versandweg
+  (`notify.*` oder `telegram_bot.*`) und optionalem Ziel (bei `telegram_bot` die Chat-ID, bei
+  `notify.send_message` die Notify-Entität). „Test senden“ schickt eine Testnachricht an den Empfänger.
+- **Raum → Meldungen bei offenem Fenster**: Empfänger des Raums ankreuzen und eine einfache Liste von Meldungen
+  pflegen: „Nach X Minuten“, mehrere Textvarianten (eine pro Zeile, zufällig, nie zweimal dieselbe hintereinander),
+  optional eine Aktion (Rollo/Skript/Szene). Platzhalter: `{raum}`, `{fenster}`, `{minuten}`, `{stufe}`,
+  `{temperatur}`, `{solltemperatur}`. „Test senden“ verschickt die Meldung mit Beispielwerten (`🔔 Test: …`).
+- Die Meldung „wieder geschlossen“ ist in der Oberfläche entfallen (`notify_on_close` ist jetzt standardmäßig `false`;
+  bereits gespeicherte Werte bleiben bis zum nächsten Speichern der Raummeldungen erhalten).
+- Rückwärtskompatibel: Hat ein Raum keine Empfänger, gilt weiter der alte Standarddienst
+  (`notify_service`/`notify_entity_id`). `notify_stages[].texts` ersetzt für die jeweilige Meldung die
+  raumweiten `notify_texts`, die als Fallback erhalten bleiben. Das Event `smart_heating_window_alert` enthält
+  zusätzlich `recipients` (Namen).
+- WebSocket: `settings/update {recipients}`, `notify/test {recipient_id}` bzw. `{room_id, stage?}`
+  (Fehler `no_recipient`, `recipient_not_found`, `room_not_found`, `service_not_found`).
