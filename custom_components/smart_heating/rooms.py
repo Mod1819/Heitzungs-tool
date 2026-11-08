@@ -15,7 +15,7 @@ ROOM_FIELDS = (
     "name", "thermostats", "window_sensors", "temperature_sensor", "window_open_temp",
     "profile_override_id", "outdoor_mode", "outdoor_curve",
     "window_open_delay", "notify_after", "notify_on_close", "notify_stages", "coupled_sensors",
-    "battery_entities",
+    "battery_entities", "notify_texts", "notify_close_texts",
 )
 
 

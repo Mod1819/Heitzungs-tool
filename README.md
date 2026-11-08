@@ -257,3 +257,16 @@ automation:
 - **Bessere Rückmeldung:** Ungültige Zeiten, „Ende vor Start“ und Überschneidungen werden rot markiert und mit einem
   Hinweis unter dem Tag erklärt. Fehler- und Erfolgsmeldungen bleiben beim Scrollen oben sichtbar. „+ Abschnitt“ bei
   einem bis 24:00 belegten Tag zeigt einen Hinweis statt eines Fehlers.
+
+## v1.4: Thermostat-Änderungen & eigene Meldungstexte
+
+**Änderungen direkt am Thermostat** (Einstellung `thermostat_changes`):
+- `ignore` (Standard): Wird ein Sollwert am Gerät oder durch eine Homematic-IP-Gruppe (eigener Zeitplan, eigene Fensterfunktion) verstellt, wird das ignoriert und der Wert aus Zeitplan/Panel sofort wieder gesetzt. Manuelle Werte setzt man im Panel. Im Raumprotokoll steht „Änderung am Gerät auf … °C ignoriert“.
+- `adopt`: bisheriges Verhalten – die Änderung am Gerät gilt als manuell (bis zum nächsten Zeitabschnitt).
+- Schleifenschutz: Setzt ein Gerät seinen Wert nach 3 Wiederherstellungen innerhalb von 15 Minuten erneut zurück, wird aufgegeben (Status „nicht bestätigt“, ein Logeintrag). Dann die Homematic-IP-Gruppe auf Modus heat/Manuell stellen. Bei einem neuen Zielwert wird wieder gesendet.
+
+**Eigene Meldungstexte** pro Raum (`notify_texts` für „Fenster zu lange offen“, `notify_close_texts` für „Wieder geschlossen“; je höchstens 20 Sätze à 300 Zeichen):
+- Pro Meldung wird zufällig ein Satz gewählt, nie zweimal derselbe hintereinander. Ohne eigene Texte gelten die Standardtexte.
+- Platzhalter: `{raum}`, `{fenster}`, `{minuten}`, `{stufe}`, `{temperatur}` (wirksame Temperatur), `{solltemperatur}` (gewünschte Temperatur). Unbekannte Platzhalter und einzelne Klammern bleiben unverändert stehen.
+- Bei Stufen mit Aktion wird deren Hinweis (z. B. „Rollo wird geschlossen.“) an die Meldung angehängt.
+- Im Panel: Raumansicht, Abschnitt „Eigene Meldungstexte (Varianten)“, ein Satz pro Zeile.

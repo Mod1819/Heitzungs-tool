@@ -126,6 +126,28 @@ def _stages(value: Any) -> list[dict]:
     return stages
 
 
+MAX_TEXTS = 20
+MAX_TEXT_LEN = 300
+
+
+def _texts(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        raise vol.Invalid("Liste von Meldungstexten erwartet")
+    out = []
+    for item in value:
+        if not isinstance(item, str):
+            raise vol.Invalid("Meldungstexte müssen Text sein")
+        item = item.strip()
+        if not item:
+            continue
+        if len(item) > MAX_TEXT_LEN:
+            raise vol.Invalid(f"Ein Meldungstext darf höchstens {MAX_TEXT_LEN} Zeichen lang sein")
+        out.append(item)
+    if len(out) > MAX_TEXTS:
+        raise vol.Invalid(f"Höchstens {MAX_TEXTS} Meldungstexte")
+    return out
+
+
 # Kontakt eines anderen Raums, der diesen Raum nach eigener Verzögerung mitsperrt
 COUPLED_SCHEMA = vol.Schema(
     {vol.Required("entity_id"): WINDOW_ID, vol.Optional("delay", default=0): COUPLED_DELAY}
@@ -209,6 +231,8 @@ SETTINGS_SCHEMA = vol.Schema(
         # Benachrichtigung über einen beliebigen HA-Dienst (Telegram, Mobile App, ...)
         vol.Optional("notify_service", default=None): vol.Any(None, _service),
         vol.Optional("notify_entity_id", default=None): vol.Any(None, NOTIFY_ENTITY_ID),
+        # Änderungen direkt am Thermostat: ignorieren (Plan gilt) oder als manuelle Änderung übernehmen
+        vol.Optional("thermostat_changes", default="ignore"): vol.In(("ignore", "adopt")),
     }
 )
 
@@ -228,6 +252,9 @@ ROOM_SCHEMA = vol.All(vol.Schema(
         vol.Optional("notify_after", default=0): NOTIFY_SECONDS,
         vol.Optional("notify_on_close", default=True): bool,
         vol.Optional("notify_stages", default=[]): _stages,
+        # Eigene Meldungstexte (Varianten, zufällig gewählt)
+        vol.Optional("notify_texts", default=[]): _texts,
+        vol.Optional("notify_close_texts", default=[]): _texts,
         vol.Optional("coupled_sensors", default=[]): _coupled,
         # Manuell zugeordnete Batterie-Entitäten (Fallback, wenn die Automatik nichts findet)
         vol.Optional("battery_entities", default=[]): _unique_list(BATTERY_ID),

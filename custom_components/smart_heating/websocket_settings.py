@@ -22,6 +22,7 @@ from .websocket import _mutate, _store
 SETTING_FIELDS = (
     "outdoor_sensor", "outdoor_enabled", "outdoor_curve", "unknown_window_policy", "default_temp",
     "notify_service", "notify_entity_id",
+    "thermostat_changes",
 )
 
 

@@ -17,6 +17,7 @@ weder als offen noch als geschlossen (keine falsche Entwarnung).
 from __future__ import annotations
 
 import logging
+import random
 from collections.abc import Callable
 from datetime import datetime, timedelta
 from typing import Any
@@ -45,6 +46,7 @@ class WindowNotifier:
         self.hass = hass
         self._log = log
         self.sent: dict[str, dict[str, Any]] = {}  # room_id -> {"since", "at", "stage"}
+        self._last_text: dict[tuple[str, str], int] = {}  # (Raum, Art) -> zuletzt benutzter Textindex
 
     def _names(self, entity_ids: list[str]) -> str:
         names = []
@@ -53,12 +55,29 @@ class WindowNotifier:
             names.append(st.name if st else eid)
         return ", ".join(names)
 
+    def _custom_text(self, cfg: dict, rid: str, kind: str, values: dict[str, str]) -> str | None:
+        """Zufälliger eigener Text (nie zweimal derselbe hintereinander) mit ersetzten Platzhaltern."""
+        room = cfg["rooms"][rid]
+        texts = room["notify_texts"] if kind == TYPE_OPEN else room["notify_close_texts"]
+        if not texts:
+            return None
+        last = self._last_text.get((rid, kind))
+        choices = [i for i in range(len(texts)) if i != last] if len(texts) > 1 else [0]
+        idx = random.choice(choices)
+        self._last_text[(rid, kind)] = idx
+        message = texts[idx]
+        for key, value in values.items():  # kein str.format: Klammern im Text bleiben unberührt
+            message = message.replace("{" + key + "}", value)
+        return message
+
     def process(self, cfg: dict, rooms: dict[str, dict[str, Any]], now: datetime) -> datetime | None:
         """Fällige Stufen auslösen; liefert den nächsten Fälligkeitszeitpunkt."""
         next_due: datetime | None = None
         for rid in list(self.sent):
             if rid not in cfg["rooms"]:
                 self.sent.pop(rid)
+        for key in [k for k in self._last_text if k[0] not in cfg["rooms"]]:
+            self._last_text.pop(key)
         for rid, room in cfg["rooms"].items():
             r = rooms.get(rid)
             if r is None:
@@ -117,8 +136,16 @@ class WindowNotifier:
             icon, suffix = ("🪟", "") if stage <= 1 else ("⚠️", f" ({stage}. Erinnerung)")
             message = f"{icon} {name}: {what} seit {_fmt_minutes(seconds)} offen{suffix}.{heat}{note}"
         else:
+            what = ""
             message = (f"✅ {name}: Fenster nach {_fmt_minutes(seconds)} wieder geschlossen. "
                        f"Heizung zurück auf {_fmt_temp(r['effective_temp'])}.")
+        custom = self._custom_text(cfg, rid, kind, {
+            "raum": name, "fenster": what or self._names(open_ids) or "Fenster",
+            "minuten": str(round(seconds / 60)), "stufe": str(stage),
+            "temperatur": _fmt_temp(r["effective_temp"]), "solltemperatur": _fmt_temp(r["desired_temp"]),
+        })
+        if custom is not None:
+            message = custom + (note if kind == TYPE_OPEN else "")
         self.hass.bus.async_fire(EVENT_WINDOW_ALERT, {
             "type": kind, "room_id": rid, "room_name": name, "message": message,
             "stage": stage, "stages": stages, "action_entity": action,

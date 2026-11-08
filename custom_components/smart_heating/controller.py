@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import logging
 from collections import deque
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 import voluptuous as vol
@@ -49,6 +49,8 @@ _LOGGER = logging.getLogger(__name__)
 EPS = 0.05
 CONFIRM_TIMEOUT = 30  # s bis ein gesendeter Wert bestätigt sein muss
 MAX_RETRIES = 2
+MAX_REVERTS = 3  # Rücksetzungen von Gerätewerten, danach Aufgabe (Schleifenschutz)
+REVERT_WINDOW = timedelta(minutes=15)
 ACTION_LOG = 25
 OUTDOOR_HYSTERESIS = 0.5  # K – kleinere Schwankungen lösen keine Neuberechnung aus
 OUTDOOR_RANGE = (-50.0, 60.0)  # plausibler Messbereich in °C
@@ -76,6 +78,8 @@ class Controller:
         # Gerät meldet dauerhaft leicht abweichend (z. B. +0,3 K): Ziel -> akzeptierter Gerätewert
         self._accepted: dict[str, tuple[float, float]] = {}
         self._failed: dict[str, float] = {}
+        # Rücksetzungen durch das Gerät (Schleifenschutz im Modus "ignore")
+        self._reverts: dict[str, list[datetime]] = {}
         self._entities: frozenset[str] = frozenset()
         self._unsubs: list[CALLBACK_TYPE] = []
         self._unsub_events: CALLBACK_TYPE | None = None
@@ -215,6 +219,7 @@ class Controller:
                 self._commanded.pop(eid, None)
                 self._failed.pop(eid, None)
                 self._accepted.pop(eid, None)
+                self._reverts.pop(eid, None)
         for eid, info in self.result["thermostats"].items():
             self._apply(eid, info)
         notify_due = self.notifier.process(cfg, self.result["rooms"], now)
@@ -348,6 +353,8 @@ class Controller:
         if self._failed.get(eid) is not None and abs(self._failed[eid] - target) < EPS:
             self._status(eid, ST_NOT_CONFIRMED, target, current)
             return  # nicht endlos wiederholen
+        if self._failed.get(eid) is not None:
+            self._reverts.pop(eid, None)  # neues Ziel nach Aufgabe -> Schleifenschutz zurücksetzen
         self._send(eid, target, current, retries=0, reason=info)
 
     @callback
@@ -470,11 +477,38 @@ class Controller:
     @callback
     def _manual_from_device(self, eid: str, temp: float) -> None:
         rooms = rooms_for_thermostat(self.store.data, eid)
+        if self.store.data["settings"]["thermostat_changes"] == "ignore":
+            self._ignore_device_change(eid, temp, rooms)
+            return
         self._commanded[eid] = temp
         locked = self.result["thermostats"].get(eid, {}).get("locked", False)
         note = " – Fenstersperre bleibt aktiv" if locked else ""
         self._log(rooms, f"{eid}: manuell auf {temp} °C gestellt{note}")
         self.hass.async_create_task(self._async_store_manual(rooms, temp), eager_start=False)
+
+    @callback
+    def _ignore_device_change(self, eid: str, temp: float, rooms: list[str]) -> None:
+        """Änderung am Gerät verwerfen: Plan-/Panel-Wert wird erneut durchgesetzt."""
+        info = self.result["thermostats"].get(eid)
+        if info is None:
+            return
+        st = self.hass.states.get(eid)
+        target = self._normalize(st, info["target"]) if st is not None else info["target"]
+        now = dt_util.utcnow()
+        times = [t for t in self._reverts.get(eid, []) if now - t < REVERT_WINDOW]
+        if len(times) >= MAX_REVERTS:
+            self._reverts[eid] = times
+            if self._failed.get(eid) is None or abs(self._failed[eid] - target) >= EPS:
+                self._failed[eid] = target
+                self._log(rooms, f"{eid}: setzt eigenen Wert dauerhaft – bitte Homematic-IP-Gruppe "
+                                 "auf Modus heat/Manuell stellen")
+            self._status(eid, ST_NOT_CONFIRMED, target, temp)
+            return
+        times.append(now)
+        self._reverts[eid] = times
+        self._log(rooms, f"{eid}: Änderung am Gerät auf {temp} °C ignoriert – "
+                         f"Sollwert {target} °C wird wieder gesetzt")
+        self.evaluate()
 
     async def _async_store_manual(self, rooms: list[str], temp: float) -> None:
         for rid in rooms:

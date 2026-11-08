@@ -64,7 +64,8 @@ def _config(rooms=None):
     }
     allday = lambda t: WEEK([{"start": "00:00", "end": "24:00", "temp": t}])  # noqa: E731
     sched = {rid: WEEK(DAY_WZ) if rid == "wz" else allday(20) for rid in rooms}
-    settings = {"active_profile_id": "winter", "outdoor_enabled": True, "outdoor_sensor": "sensor.aussen"}
+    settings = {"active_profile_id": "winter", "outdoor_enabled": True, "outdoor_sensor": "sensor.aussen",
+                "thermostat_changes": "adopt"}
     return {"settings": settings, "rooms": rooms,
             "profiles": {"winter": {"name": "Winter", "schedules": sched},
                          "sommer": {"name": "Sommer", "schedules": {r: allday(16) for r in rooms}}}}

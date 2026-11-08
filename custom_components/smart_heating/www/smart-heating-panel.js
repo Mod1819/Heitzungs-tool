@@ -57,6 +57,7 @@ class SmartHeatingPanel extends HTMLElement {
     this._view = "dashboard";
     this._roomId = null;
     this._form = {};
+    this._openDetails = {};
     this._data = null;
     this._draft = null;
     this._error = null;
@@ -66,6 +67,7 @@ class SmartHeatingPanel extends HTMLElement {
     this.shadowRoot.addEventListener("click", (e) => this._onClick(e));
     this.shadowRoot.addEventListener("change", (e) => this._onChange(e));
     this.shadowRoot.addEventListener("input", (e) => this._onInput(e));
+    this.shadowRoot.addEventListener("toggle", (e) => { if (e.target.dataset && e.target.dataset.keep) this._openDetails[e.target.dataset.keep] = e.target.open; }, true);
     this.shadowRoot.addEventListener("focusout", (e) => { this._normSlotField(e.target); setTimeout(() => this._pendingRender && !this._focused() && this._render(), 0); });
   }
 
@@ -297,15 +299,18 @@ class SmartHeatingPanel extends HTMLElement {
           if (delay === null || stages.some((st) => !Number.isFinite(st.after) || st.after < 60) || coupled.some((c) => !Number.isFinite(c.delay))) {
             this._error = "Bitte Minuten als Zahl eingeben (Meldestufen mindestens 1 Minute)"; break;
           }
+          const lines = (v) => String(v).split("\n").map((x) => x.trim()).filter(Boolean);
           await this._call("rooms/update", {
             room_id: this._roomId,
+            notify_texts: lines(this.f("texts_open", (room.notify_texts || []).join("\n"))),
+            notify_close_texts: lines(this.f("texts_close", (room.notify_close_texts || []).join("\n"))),
             window_open_temp: parseNum(this.f("window_temp", room.window_open_temp)),
             window_open_delay: Math.round(delay * 60),
             notify_stages: stages,
             notify_on_close: !!this.f("notify_close", room.notify_on_close),
             coupled_sensors: coupled,
           }, "Fenster-Einstellungen gespeichert");
-          ["window_temp", "window_delay", "notify_close"].forEach((k) => delete this._form[k]);
+          ["window_temp", "window_delay", "notify_close", "texts_open", "texts_close"].forEach((k) => delete this._form[k]);
           this._rd = null;
           break;
         }
@@ -403,6 +408,7 @@ class SmartHeatingPanel extends HTMLElement {
       outdoor_curve: { start_at: parseNum(this.f("s_start", c.start_at)), full_at: parseNum(this.f("s_full", c.full_at)), max_reduction: parseNum(this.f("s_max", c.max_reduction)), points },
       unknown_window_policy: this.f("s_policy", s.unknown_window_policy),
       default_temp: parseNum(this.f("s_default", s.default_temp)),
+      thermostat_changes: this.f("s_thermo", s.thermostat_changes) === "adopt" ? "adopt" : "ignore",
       notify_service: (this.f("s_notify", s.notify_service || "") || "").trim() || null,
       notify_entity_id: (this.f("s_notify_entity", s.notify_entity_id || "") || "").trim() || null,
     }, "Einstellungen gespeichert");
@@ -586,6 +592,10 @@ class SmartHeatingPanel extends HTMLElement {
         <label class="check"><input type="checkbox" data-f="notify_close" ${this.f("notify_close", room.notify_on_close) ? "checked" : ""}> Meldung, wenn wieder geschlossen</label>
         <div class="sub">Ein Rollo wird geschlossen bzw. auf die Position gefahren und <b>nicht</b> automatisch wieder hochgefahren. Kein Rollo an Türen eintragen, durch die man hinausgeht.</div>
         ${rd.stages.some((st) => st.notify) && !this.cfg.settings.notify_service ? '<div class="sub">Kein Benachrichtigungsdienst eingestellt – es wird nur das Event <code>smart_heating_window_alert</code> ausgelöst (Einstellungen).</div>' : ""}
+        <details data-keep="texts" ${this._openDetails.texts ? "open" : ""}><summary>Eigene Meldungstexte (Varianten)</summary>
+          <label>Fenster zu lange offen (ein Satz pro Zeile)<textarea rows="4" data-f="texts_open" placeholder="Leer = Standardtext">${esc(this.f("texts_open", (room.notify_texts || []).join("\n")))}</textarea></label>
+          <label>Wieder geschlossen (ein Satz pro Zeile)<textarea rows="4" data-f="texts_close" placeholder="Leer = Standardtext">${esc(this.f("texts_close", (room.notify_close_texts || []).join("\n")))}</textarea></label>
+          <div class="sub">Pro Meldung wird zufällig ein Satz gewählt, nie zweimal derselbe hintereinander. Platzhalter: <code>{raum}</code>, <code>{fenster}</code>, <code>{minuten}</code>, <code>{stufe}</code>, <code>{temperatur}</code> (aktuelle Solltemperatur), <code>{solltemperatur}</code> (gewünschte Temperatur). Bei Stufen mit Aktion wird deren Hinweis angehängt.</div></details>
         <h3>Mitsperren durch Kontakte anderer Räume</h3>
         <div class="sub">Z. B. Küche/Flur: Wenn die Terrassentür im Wohnzimmer länger offen ist, wird dieser Raum ebenfalls abgesenkt. Meldungen kommen nur vom Raum mit dem Fenster.</div>
         ${this.entityOptions("dl-coupled", ["binary_sensor", "input_boolean"], true)}
@@ -734,6 +744,11 @@ class SmartHeatingPanel extends HTMLElement {
         <label>Fensterkontakt nicht verfügbar / unbekannt
           <select data-f="s_policy"><option value="open" ${this.f("s_policy", s.unknown_window_policy) === "open" ? "selected" : ""}>wie offen behandeln (sicher, empfohlen)</option>
           <option value="closed" ${this.f("s_policy", s.unknown_window_policy) === "closed" ? "selected" : ""}>wie geschlossen behandeln</option></select></label></div>
+      <div class="card"><h2>Änderungen direkt am Thermostat</h2>
+        <label>Wenn ein Thermostat am Gerät (oder durch eine Homematic-IP-Gruppe) verstellt wird
+          <select data-f="s_thermo"><option value="ignore" ${this.f("s_thermo", s.thermostat_changes) !== "adopt" ? "selected" : ""}>ignorieren – Zeitplan/Panel gilt immer (empfohlen)</option>
+          <option value="adopt" ${this.f("s_thermo", s.thermostat_changes) === "adopt" ? "selected" : ""}>als manuelle Änderung übernehmen</option></select></label>
+        <div class="sub">Manuelle Werte setzt man dann im Panel. Setzt ein Gerät seinen eigenen Wert dauerhaft zurück, wird nach 3 Versuchen aufgegeben (Status „nicht bestätigt“).</div></div>
       <div class="card"><h2>Benachrichtigung (Fenster zu lange offen)</h2>
         <label>Dienst, z. B. notify.telegram oder telegram_bot.send_message${this.serviceOptions()}
           <input list="dl-notify" data-f="s_notify" value="${esc(this.f("s_notify", s.notify_service || ""))}" placeholder="leer = nur Event"></label>
@@ -808,7 +823,9 @@ h2 { font-size:18px; margin:0 0 12px; font-weight:500; } h3 { font-size:15px; ma
 label { display:flex; flex-direction:column; gap:4px; font-size:13px; color:var(--secondary-text-color); margin:8px 0; }
 label.inline { flex-direction:row; align-items:center; margin:0; }
 label.check { flex-direction:row; align-items:center; gap:8px; color:var(--primary-text-color); font-size:15px; }
-input, select { font:inherit; font-size:15px; padding:8px 10px; border-radius:8px; border:1px solid var(--divider-color); background:var(--card-background-color); color:var(--primary-text-color); min-width:0; }
+input, select, textarea { font:inherit; font-size:15px; padding:8px 10px; border-radius:8px; border:1px solid var(--divider-color); background:var(--card-background-color); color:var(--primary-text-color); min-width:0; }
+textarea { width:100%; min-height:90px; box-sizing:border-box; resize:vertical; }
+details { margin:12px 0; } summary { cursor:pointer; font-weight:500; }
 input[type=number] { width:90px; } input[type=checkbox] { width:18px; height:18px; }
 button { font:inherit; font-size:14px; padding:8px 14px; border-radius:8px; border:1px solid var(--divider-color); background:var(--secondary-background-color, transparent); color:var(--primary-text-color); cursor:pointer; }
 button.primary { background:var(--primary-color); border-color:var(--primary-color); color:var(--text-primary-color, #fff); }

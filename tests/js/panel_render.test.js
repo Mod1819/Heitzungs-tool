@@ -342,3 +342,30 @@ test("Wochenplan: Abschnitt hinzufügen bei 24:00 zeigt Hinweis statt Fehler", a
   assert.equal(t.root.querySelector(".msg.error"), null);
   assert.equal(count(), before);
 });
+
+test("Einstellungen: Thermostat-Änderungen ignorieren/übernehmen wird gespeichert", async () => {
+  const t = setup(); await tick(); await tick();
+  await t.click("[data-act=nav][data-view=settings]");
+  assert.match(t.root.innerHTML, /Änderungen direkt am Thermostat/);
+  await t.click("[data-act=settings_save]");
+  assert.equal(t.calls.at(-1).thermostat_changes, "ignore");
+  t.type("[data-f=s_thermo]", "adopt");
+  await t.click("[data-act=settings_save]");
+  const c = t.calls.at(-1);
+  assert.equal(c.type, "smart_heating/settings/update");
+  assert.equal(c.thermostat_changes, "adopt");
+});
+
+test("Raum: eigene Meldungstexte werden zeilenweise als Arrays gespeichert", async () => {
+  const t = setup(); await tick(); await tick();
+  await t.click("[data-act=open_room][data-room=wz]");
+  assert.match(t.root.innerHTML, /Eigene Meldungstexte \(Varianten\)/);
+  assert.equal(t.q("[data-f=texts_open]").tagName, "TEXTAREA");
+  t.type("[data-f=texts_open]", "  Fenster in {raum} zu!  \n\nNoch offen: {fenster}\n");
+  t.type("[data-f=texts_close]", "Alles zu.");
+  await t.click("[data-act=save_window_temp]");
+  const c = t.calls.at(-1);
+  assert.equal(c.type, "smart_heating/rooms/update");
+  assert.deepEqual(c.notify_texts, ["Fenster in {raum} zu!", "Noch offen: {fenster}"]);
+  assert.deepEqual(c.notify_close_texts, ["Alles zu."]);
+});

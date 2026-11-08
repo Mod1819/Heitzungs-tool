@@ -17,7 +17,7 @@ NOW = datetime(2026, 11, 2, 7, 15, tzinfo=TZ)  # Montag
 ALLDAY = lambda t: [{"start": "00:00", "end": "24:00", "temp": t}]  # noqa: E731
 WEEK = lambda day: {d: day for d in ("mon", "tue", "wed", "thu", "fri", "sat", "sun")}  # noqa: E731
 CFG = {
-    "settings": {"active_profile_id": "winter"},
+    "settings": {"active_profile_id": "winter", "thermostat_changes": "adopt"},
     "rooms": {
         "wz": {"name": "Wohnzimmer", "thermostats": ["climate.wz1", "climate.wz2"],
                "window_sensors": ["binary_sensor.wz_f1", "binary_sensor.terrasse"]},
